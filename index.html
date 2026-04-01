@@ -257,6 +257,7 @@ function redraw() {
 
     // Draw traverse lines
     setups.forEach(s => {
+        if (!s.setup || !s.bs) return;
         const occ = toCanvas(s.setup.e, s.setup.n);
         const bs = toCanvas(s.bs.e, s.bs.n);
         // BS line (orange dashed)
@@ -281,7 +282,7 @@ function redraw() {
     });
 
     // In-progress lines
-    if (currentSetup && currentBS) {
+    if (currentSetup && currentBS && currentSetup.e !== undefined && currentBS.e !== undefined) {
         const occ = toCanvas(currentSetup.e, currentSetup.n);
         const bs = toCanvas(currentBS.e, currentBS.n);
         ctx.beginPath();
@@ -341,7 +342,7 @@ canvas.addEventListener('click', e => {
         updatePointList();
         redraw();
     } else if (mode === 'bs') {
-        if (pt.name === currentSetup.name) return;
+        if (!currentSetup || pt.name === currentSetup.name) return;
         currentBS = pt;
         mode = 'fs';
         addLog(`Backsight: ${pt.name}`, 'log-bs');
@@ -353,7 +354,7 @@ canvas.addEventListener('click', e => {
         btnUndo.disabled = false;
         redraw();
     } else if (mode === 'fs') {
-        if (pt.name === currentSetup.name || pt.name === currentBS.name) return;
+        if (!currentSetup || !currentBS || pt.name === currentSetup.name || pt.name === currentBS.name) return;
         // Add foresight to current setup group
         let grp = setups.find(s => s.setup.name === currentSetup.name && s.bs.name === currentBS.name && !s._closed);
         if (!grp) {
@@ -444,7 +445,7 @@ btnUndo.addEventListener('click', () => {
 let lastMouse = null;
 canvas.addEventListener('mousedown', e => { isDragging = false; dragStart = { x: e.clientX, y: e.clientY }; lastMouse = { x: e.clientX, y: e.clientY }; });
 canvas.addEventListener('mousemove', e => {
-    if (lastMouse && (Math.abs(e.clientX - dragStart.x) > 3 || Math.abs(e.clientY - dragStart.y) > 3)) {
+    if (lastMouse && dragStart && (Math.abs(e.clientX - dragStart.x) > 3 || Math.abs(e.clientY - dragStart.y) > 3)) {
         isDragging = true;
         pan.x += e.clientX - lastMouse.x;
         pan.y += e.clientY - lastMouse.y;
@@ -467,8 +468,8 @@ canvas.addEventListener('mousemove', e => {
         tooltip.style.display = 'none';
     }
 });
-canvas.addEventListener('mouseup', () => { lastMouse = null; });
-canvas.addEventListener('mouseleave', () => { lastMouse = null; tooltip.style.display = 'none'; });
+canvas.addEventListener('mouseup', () => { lastMouse = null; dragStart = null; });
+canvas.addEventListener('mouseleave', () => { lastMouse = null; dragStart = null; tooltip.style.display = 'none'; });
 canvas.addEventListener('wheel', e => {
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
