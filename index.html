@@ -618,7 +618,6 @@ btnExport.addEventListener('click', () => {
         const bsDist = distance(occ, bs).toFixed(3);
 
         lines.push(`OC,OP${occ.name},N ${occ.n.toFixed(4)},E ${occ.e.toFixed(4)},EL0.0000`);
-        lines.push(`LS,HI0.0000,HR0.0000`);
         lines.push(`BK,OP${occ.name},BP${bs.name},BS${bsDMS},BC0.0000`);
         lines.push(`BD,OP${occ.name},FP${bs.name},AR0.0000,ZE90.0000,SD${bsDist},--BS`);
 
