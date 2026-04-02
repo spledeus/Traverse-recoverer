@@ -590,14 +590,22 @@ btnExport.addEventListener('click', () => {
 
     lines.push(`JB,NMTraverse Builder Export,DT${dateStr},TM${timeStr}`);
     lines.push(`MO,AD0,UN2,SF1.00000000,EC0,EO0.0,AU0`);
-    lines.push(`-- Traverse Builder — ESE LLC`);
-    lines.push(`-- Generated from manually entered coordinates`);
     lines.push(``);
 
-    // SP records for all points
-    points.forEach(p => {
-        const desc = p.desc ? `,--${p.desc}` : '';
-        lines.push(`SP,PN${p.name},N ${p.n.toFixed(4)},E ${p.e.toFixed(4)},EL0.0000${desc}`);
+    // Collect only the points actually referenced in the traverse,
+    // in dependency order: occupy → backsight → foresights, setup by setup.
+    const seen = new Set();
+    const needed = [];
+    setups.forEach(s => {
+        [s.setup, s.bs, ...s.foresights].forEach(p => {
+            if (!seen.has(p.name)) { seen.add(p.name); needed.push(p); }
+        });
+    });
+    const pointMap = Object.fromEntries(points.map(p => [p.name, p]));
+    needed.forEach(p => {
+        const full = pointMap[p.name] || p;
+        const desc = full.desc ? `,--${full.desc}` : '';
+        lines.push(`SP,PN${full.name},N ${full.n.toFixed(4)},E ${full.e.toFixed(4)},EL0.0000${desc}`);
     });
     lines.push(``);
 
