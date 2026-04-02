@@ -110,7 +110,9 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
         <div class="panel-section">
             <h3>Coordinates</h3>
             <textarea id="coordInput" placeholder="Name,N,E or Name,N,E,Z,Desc&#10;1,5000,5000&#10;2,5100,5020&#10;3,5080,5150"></textarea>
+            <input type="file" id="fileInput" accept=".csv,.txt,.rw5" style="display:none;">
             <button class="btn btn-accent" id="btnLoad" style="margin-top:6px;">Load Points</button>
+            <button class="btn btn-muted" id="btnLoadFile" style="margin-top:5px;">&#128194; Load from File…</button>
         </div>
 
         <div class="panel-section">
@@ -156,6 +158,8 @@ const pointList = document.getElementById('pointList');
 const traverseLog = document.getElementById('traverseLog');
 const tooltip = document.getElementById('tooltip');
 const btnLoad = document.getElementById('btnLoad');
+const btnLoadFile = document.getElementById('btnLoadFile');
+const fileInput = document.getElementById('fileInput');
 const btnExport = document.getElementById('btnExport');
 const btnClear = document.getElementById('btnClear');
 const btnNextSetup = document.getElementById('btnNextSetup');
@@ -184,6 +188,20 @@ function resizeCanvas() {
 }
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
+
+// ── Load from File ──
+btnLoadFile.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+        document.getElementById('coordInput').value = ev.target.result;
+        showStatus(`File loaded: <span>${file.name}</span> — click Load Points to continue.`);
+    };
+    reader.readAsText(file);
+    fileInput.value = '';
+});
 
 // ── Load points ──
 btnLoad.addEventListener('click', () => {
