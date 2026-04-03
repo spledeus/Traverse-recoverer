@@ -93,6 +93,8 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
 #btnNextSetup { background: var(--orange); color: #000; }
 #btnEnd { background: var(--green); color: #000; }
 #btnUndo { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+#btnLoad { background: var(--accent); color: #000; }
+#btnExport { background: var(--purple); color: #fff; }
 
 /* tooltip */
 #tooltip { position: absolute; background: rgba(0,0,0,0.85); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-size: 11px; font-family: var(--font-mono); pointer-events: none; display: none; color: var(--text); }
@@ -111,8 +113,7 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
             <h3>Coordinates</h3>
             <textarea id="coordInput" placeholder="Name,N,E or Name,N,E,Z,Desc&#10;1,5000,5000&#10;2,5100,5020&#10;3,5080,5150"></textarea>
             <input type="file" id="fileInput" accept=".csv,.txt,.rw5" style="display:none;">
-            <button class="btn btn-accent" id="btnLoad" style="margin-top:6px;">Load Points</button>
-            <button class="btn btn-muted" id="btnLoadFile" style="margin-top:5px;">&#128194; Load from File…</button>
+            <button class="btn btn-muted" id="btnLoadFile" style="margin-top:6px;">&#128194; Load from File…</button>
         </div>
 
         <div class="panel-section">
@@ -126,8 +127,7 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
         </div>
 
         <div class="panel-section" style="margin-top:auto; border-top: 1px solid var(--border); border-bottom: none;">
-            <button class="btn btn-purple" id="btnExport" disabled>Export RW5</button>
-            <button class="btn btn-muted" id="btnClear" style="margin-top:5px;">Clear All</button>
+            <button class="btn btn-muted" id="btnClear">Clear All</button>
         </div>
     </div>
 
@@ -141,9 +141,11 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
         </div>
 
         <div id="actionBar">
+            <button id="btnLoad">Load Points</button>
             <button id="btnUndo" disabled>&#8592; Undo Last</button>
             <button id="btnNextSetup" disabled>Next Setup &#8594;</button>
             <button id="btnEnd" disabled>End Traverse</button>
+            <button id="btnExport" disabled>Export RW5</button>
         </div>
 
         <div id="tooltip"></div>
@@ -642,7 +644,6 @@ btnExport.addEventListener('click', () => {
         const bsDMS = decimalToDMS(bsAz).toFixed(4);
         const bsDist = distance(occ, bs).toFixed(3);
 
-        lines.push(`OC,OP${occ.name},N ${occ.n.toFixed(4)},E ${occ.e.toFixed(4)},EL0.0000`);
         lines.push(`BK,OP${occ.name},BP${bs.name},BS${bsDMS},BC0.0000`);
         lines.push(`BD,OP${occ.name},FP${bs.name},AR0.0000,ZE90.0000,SD${bsDist},--BS`);
 
