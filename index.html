@@ -95,6 +95,20 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
 #btnUndo { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
 #btnLoad { background: var(--accent); color: #000; }
 #btnExport { background: var(--purple); color: #fff; }
+#btnEdit { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+#btnEdit.active { background: var(--orange); color: #000; box-shadow: 0 0 10px var(--orange); }
+#btnDelete { background: var(--red); color: #fff; display: none; }
+#btnRevise { background: var(--accent); color: #000; display: none; }
+.log-item.log-selected { background: rgba(239,83,80,0.18); border-left-color: var(--red) !important; color: var(--red) !important; }
+
+/* popup overlay */
+#popupOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; align-items: center; justify-content: center; }
+#popupOverlay.show { display: flex; }
+#popupBox { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 24px 28px; min-width: 280px; text-align: center; }
+#popupBox h3 { font-size: 14px; color: var(--text); margin-bottom: 8px; }
+#popupBox p { font-size: 12px; color: var(--muted); margin-bottom: 18px; }
+#popupBox .popup-btns { display: flex; gap: 10px; justify-content: center; }
+#popupBox .popup-btns button { padding: 7px 20px; border: none; border-radius: 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
 
 /* tooltip */
 #tooltip { position: absolute; background: rgba(0,0,0,0.85); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-size: 11px; font-family: var(--font-mono); pointer-events: none; display: none; color: var(--text); }
@@ -145,10 +159,22 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
             <button id="btnUndo" disabled>&#8592; Undo Last</button>
             <button id="btnNextSetup" disabled>Next Setup &#8594;</button>
             <button id="btnEnd" disabled>End Traverse</button>
+            <button id="btnEdit" disabled>&#9998; Edit</button>
+            <button id="btnDelete">Delete</button>
+            <button id="btnRevise">Revise</button>
             <button id="btnExport" disabled>Export RW5</button>
         </div>
 
         <div id="tooltip"></div>
+    </div>
+</div>
+
+<!-- Popup overlay -->
+<div id="popupOverlay">
+    <div id="popupBox">
+        <h3 id="popupTitle"></h3>
+        <p id="popupMsg"></p>
+        <div class="popup-btns" id="popupBtns"></div>
     </div>
 </div>
 
@@ -167,6 +193,9 @@ const btnClear = document.getElementById('btnClear');
 const btnNextSetup = document.getElementById('btnNextSetup');
 const btnEnd = document.getElementById('btnEnd');
 const btnUndo = document.getElementById('btnUndo');
+const btnEdit = document.getElementById('btnEdit');
+const btnDelete = document.getElementById('btnDelete');
+const btnRevise = document.getElementById('btnRevise');
 const dotSetup = document.getElementById('dotSetup');
 const dotBS = document.getElementById('dotBS');
 const dotFS = document.getElementById('dotFS');
@@ -180,6 +209,12 @@ let mode = 'idle';     // idle | setup | bs | fs
 let pan = { x: 0, y: 0 };
 let scale = 1;
 let isDragging = false, dragStart = null;
+
+// ── Edit mode state ──
+let editMode = false;
+let editSnapshot = null;       // deep copy of setups before edit session
+let selectedEdit = null;       // { setupIdx, fsIdx } — currently selected FS
+let revisingEdit = false;      // waiting for a new foresight click
 
 // ── Resize canvas ──
 function resizeCanvas() {
@@ -276,7 +311,7 @@ function redraw() {
     ctx.fillRect(0, 0, W, H);
 
     // Draw traverse lines
-    setups.forEach(s => {
+    setups.forEach((s, si) => {
         if (!s.setup || !s.bs) return;
         const occ = toCanvas(s.setup.e, s.setup.n);
         const bs = toCanvas(s.bs.e, s.bs.n);
@@ -290,14 +325,24 @@ function redraw() {
         ctx.stroke();
         ctx.setLineDash([]);
         // FS lines (solid cyan)
-        s.foresights.forEach(fp => {
+        s.foresights.forEach((fp, fi) => {
             const fs = toCanvas(fp.e, fp.n);
+            const isSelected = editMode && selectedEdit && selectedEdit.setupIdx === si && selectedEdit.fsIdx === fi;
             ctx.beginPath();
             ctx.moveTo(occ.cx, occ.cy);
             ctx.lineTo(fs.cx, fs.cy);
-            ctx.strokeStyle = '#4fc3f7';
-            ctx.lineWidth = 2;
+            ctx.strokeStyle = isSelected ? '#ef5350' : '#4fc3f7';
+            ctx.lineWidth = isSelected ? 3 : 2;
             ctx.stroke();
+            // Draw midpoint handle in edit mode
+            if (editMode) {
+                const mx = (occ.cx + fs.cx) / 2;
+                const my = (occ.cy + fs.cy) / 2;
+                ctx.beginPath();
+                ctx.arc(mx, my, isSelected ? 7 : 5, 0, Math.PI*2);
+                ctx.fillStyle = isSelected ? '#ef5350' : 'rgba(79,195,247,0.5)';
+                ctx.fill();
+            }
         });
     });
 
@@ -341,13 +386,52 @@ function redraw() {
 // ── Canvas click ──
 canvas.addEventListener('click', e => {
     if (isDragging) return;
-    if (mode === 'idle' || points.length === 0) return;
 
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     const cx = (e.clientX - rect.left) * scaleX;
     const cy = (e.clientY - rect.top) * scaleY;
+
+    // ── Edit mode ──
+    if (editMode) {
+        // If revising, pick new foresight point
+        if (revisingEdit && selectedEdit && selectedEdit.pendingReplace) {
+            const pt = findNearest(cx, cy);
+            if (!pt) return;
+            const grp = setups[selectedEdit.setupIdx];
+            if (pt.name === grp.setup.name || pt.name === grp.bs.name) return;
+            grp.foresights.push(pt);
+            addLog(`  Revised → Foresight: ${pt.name}`, 'log-fs');
+            revisingEdit = false;
+            selectedEdit = null;
+            btnDelete.style.display = 'none';
+            btnRevise.style.display = 'none';
+            updatePointList();
+            redraw();
+            showStatus('Edit mode: click a foresight line or log entry to select it.');
+            return;
+        }
+        // Otherwise check for FS line click by midpoint proximity
+        let found = false;
+        setups.forEach((s, si) => {
+            if (found) return;
+            const occ = toCanvas(s.setup.e, s.setup.n);
+            s.foresights.forEach((fp, fi) => {
+                if (found) return;
+                const fs = toCanvas(fp.e, fp.n);
+                const mx = (occ.cx + fs.cx) / 2;
+                const my = (occ.cy + fs.cy) / 2;
+                if (Math.hypot(cx - mx, cy - my) < 20) {
+                    editSelect(si, fi);
+                    found = true;
+                }
+            });
+        });
+        return;
+    }
+
+    if (mode === 'idle' || points.length === 0) return;
 
     const pt = findNearest(cx, cy);
     if (!pt) return;
@@ -513,12 +597,34 @@ function updatePointList() {
         div.innerHTML = `<span class="pt-name">${p.name}</span><span class="pt-coords">N:${p.n.toFixed(3)} E:${p.e.toFixed(3)}</span>`;
         pointList.appendChild(div);
     });
+    // Enable edit button whenever we have closed setups with foresights
+    btnEdit.disabled = !setups.some(s => s._closed && s.foresights.length > 0);
 }
 
 function addLog(msg, cls) {
     const div = document.createElement('div');
     div.className = `log-item ${cls}`;
     div.textContent = msg;
+    // If this is a foresight entry, make it selectable in edit mode
+    if (cls === 'log-fs') {
+        div.style.cursor = 'pointer';
+        div.addEventListener('click', () => {
+            if (!editMode) return;
+            // Count which FS index this is globally
+            const allFS = document.querySelectorAll('.log-item.log-fs');
+            let globalIdx = -1;
+            allFS.forEach((el, i) => { if (el === div) globalIdx = i; });
+            if (globalIdx < 0) return;
+            // Map global FS index to setupIdx + fsIdx
+            let count = 0;
+            for (let si = 0; si < setups.length; si++) {
+                for (let fi = 0; fi < setups[si].foresights.length; fi++) {
+                    if (count === globalIdx) { editSelect(si, fi); return; }
+                    count++;
+                }
+            }
+        });
+    }
     traverseLog.appendChild(div);
     traverseLog.scrollTop = traverseLog.scrollHeight;
 }
@@ -580,6 +686,156 @@ function angleRight(setupPt, bsPt, fsPt) {
     if (ar < 0) ar += 360;
     return ar;
 }
+
+// ── Popup helper ──
+function showPopup(title, msg, buttons) {
+    // buttons: [{ label, color, cb }]
+    document.getElementById('popupTitle').textContent = title;
+    document.getElementById('popupMsg').textContent = msg;
+    const btns = document.getElementById('popupBtns');
+    btns.innerHTML = '';
+    buttons.forEach(b => {
+        const btn = document.createElement('button');
+        btn.textContent = b.label;
+        btn.style.background = b.color;
+        btn.style.color = b.dark ? '#000' : '#fff';
+        btn.onclick = () => {
+            document.getElementById('popupOverlay').classList.remove('show');
+            b.cb();
+        };
+        btns.appendChild(btn);
+    });
+    document.getElementById('popupOverlay').classList.add('show');
+}
+
+// ── Regroup setups: merge same OC+BS, prune empty ──
+function regroupSetups() {
+    const merged = [];
+    setups.forEach(s => {
+        if (!s.bs) return; // no BS = nothing to keep
+        const key = `${s.setup.name}||${s.bs.name}`;
+        const existing = merged.find(m => `${m.setup.name}||${m.bs.name}` === key);
+        if (existing) {
+            s.foresights.forEach(fp => {
+                if (!existing.foresights.find(e => e.name === fp.name))
+                    existing.foresights.push(fp);
+            });
+        } else {
+            merged.push({ setup: s.setup, bs: s.bs, foresights: [...s.foresights], _closed: true });
+        }
+    });
+    // prune groups with no foresights
+    setups = merged.filter(s => s.foresights.length > 0);
+}
+
+// ── Edit mode: select a FS by setupIdx + fsIdx ──
+function editSelect(setupIdx, fsIdx) {
+    selectedEdit = { setupIdx, fsIdx };
+    revisingEdit = false;
+    btnDelete.style.display = '';
+    btnRevise.style.display = '';
+    // highlight log
+    document.querySelectorAll('.log-item').forEach(el => el.classList.remove('log-selected'));
+    const logItems = document.querySelectorAll('.log-item.log-fs');
+    // find matching log entry by counting FS entries in order
+    let count = 0;
+    let targetCount = 0;
+    for (let i = 0; i < setupIdx; i++)
+        targetCount += setups[i].foresights.length;
+    targetCount += fsIdx;
+    logItems.forEach(el => {
+        if (count === targetCount) el.classList.add('log-selected');
+        count++;
+    });
+    redraw();
+    showStatus(`Selected FS: <span>${setups[setupIdx].foresights[fsIdx].name}</span> from setup <span>${setups[setupIdx].setup.name}</span> — Delete or Revise.`);
+}
+
+function editClearSelection() {
+    selectedEdit = null;
+    revisingEdit = false;
+    btnDelete.style.display = 'none';
+    btnRevise.style.display = 'none';
+    document.querySelectorAll('.log-item').forEach(el => el.classList.remove('log-selected'));
+    redraw();
+}
+
+// ── Edit button ──
+btnEdit.addEventListener('click', () => {
+    if (!editMode) {
+        // Enter edit mode
+        editMode = true;
+        editSnapshot = JSON.parse(JSON.stringify(setups));
+        btnEdit.classList.add('active');
+        btnEdit.textContent = '✎ Edit ON';
+        btnDelete.style.display = 'none';
+        btnRevise.style.display = 'none';
+        showStatus('Edit mode: click a foresight line or log entry to select it.');
+    } else {
+        // Exit edit mode — prompt save or cancel
+        showPopup(
+            'Exit Edit Mode',
+            'Save your changes or cancel to revert.',
+            [
+                { label: 'Save Changes', color: '#66bb6a', dark: true, cb: () => {
+                    regroupSetups();
+                    editMode = false;
+                    editSnapshot = null;
+                    editClearSelection();
+                    btnEdit.classList.remove('active');
+                    btnEdit.textContent = '✎ Edit';
+                    updatePointList();
+                    redraw();
+                    showStatus(`Changes saved — ${setups.length} setup(s).`);
+                }},
+                { label: 'Cancel Changes', color: '#ef5350', cb: () => {
+                    setups = JSON.parse(JSON.stringify(editSnapshot));
+                    editMode = false;
+                    editSnapshot = null;
+                    editClearSelection();
+                    btnEdit.classList.remove('active');
+                    btnEdit.textContent = '✎ Edit';
+                    updatePointList();
+                    redraw();
+                    showStatus('Edit cancelled — reverted to previous state.');
+                }}
+            ]
+        );
+    }
+});
+
+// ── Delete selected FS ──
+btnDelete.addEventListener('click', () => {
+    if (!selectedEdit) return;
+    const { setupIdx, fsIdx } = selectedEdit;
+    const grp = setups[setupIdx];
+    grp.foresights.splice(fsIdx, 1);
+    editClearSelection();
+    if (grp.foresights.length === 0) {
+        showPopup('Setup is Null', 'No foresights remain for this setup. The setup will be removed when you save.', [
+            { label: 'OK', color: '#4fc3f7', dark: true, cb: () => {} }
+        ]);
+    }
+    updatePointList();
+    redraw();
+});
+
+// ── Revise selected FS ──
+btnRevise.addEventListener('click', () => {
+    if (!selectedEdit) return;
+    revisingEdit = true;
+    const { setupIdx, fsIdx } = selectedEdit;
+    const grp = setups[setupIdx];
+    const oldName = grp.foresights[fsIdx].name;
+    // remove old foresight, keep slot info for replacement
+    grp.foresights.splice(fsIdx, 1);
+    selectedEdit = { setupIdx, pendingReplace: true };
+    showStatus(`Revising: click a new foresight point to replace <span>${oldName}</span>.`);
+    redraw();
+});
+
+// ── Canvas click — edit mode intercept ──
+// (injected at top of existing click handler)
 
 // ── Export RW5 ──
 btnExport.addEventListener('click', () => {
@@ -669,6 +925,9 @@ btnExport.addEventListener('click', () => {
 // ── Clear All ──
 btnClear.addEventListener('click', () => {
     points = []; setups = []; currentSetup = null; currentBS = null; mode = 'idle';
+    editMode = false; editSnapshot = null; selectedEdit = null; revisingEdit = false;
+    btnEdit.classList.remove('active'); btnEdit.textContent = '✎ Edit'; btnEdit.disabled = true;
+    btnDelete.style.display = 'none'; btnRevise.style.display = 'none';
     document.getElementById('coordInput').value = '';
     pointList.innerHTML = '';
     traverseLog.innerHTML = '';
