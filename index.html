@@ -41,6 +41,20 @@ header h1 { font-size: 16px; font-weight: 600; letter-spacing: 0.04em; color: va
 /* LEFT PANEL */
 #leftPanel { width: 280px; flex-shrink: 0; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; position: relative; }
 
+/* Alignment dialogue — over left panel like desc popup */
+#alignPopup { display: none; position: absolute; top: 0; left: 0; right: 0; background: var(--surface); border-bottom: 2px solid var(--orange); z-index: 51; padding: 12px 14px; }
+#alignPopup h4 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--orange); margin-bottom: 8px; }
+.align-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 11px; font-family: var(--font-mono); }
+.align-row .align-num { width: 16px; color: var(--orange); font-weight: 700; flex-shrink: 0; }
+.align-row .align-img { flex: 1; color: var(--muted); }
+.align-row .align-img.set { color: var(--accent); }
+.align-row select { flex: 1; background: var(--surface2); border: 1px solid var(--border); color: var(--text); font-size: 11px; padding: 3px 5px; border-radius: 3px; }
+.align-row select:focus { outline: none; border-color: var(--orange); }
+#alignPopup .desc-btns { display: flex; gap: 6px; margin-top: 10px; }
+#alignPopup .desc-btns button { flex: 1; padding: 5px 0; border: none; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; }
+#alignOK { background: var(--orange); color: #000; }
+#alignSkip { background: var(--surface2); color: var(--text); border: 1px solid var(--border) !important; }
+
 /* Description popup — floats over the left panel coordinates area */
 #descPopup { display: none; position: absolute; top: 0; left: 0; right: 0; background: var(--surface); border-bottom: 2px solid var(--accent); z-index: 50; padding: 12px 14px; }
 #descPopup h4 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); margin-bottom: 6px; }
@@ -104,6 +118,11 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
 #actionBar button:hover { transform: translateY(-1px); }
 #actionBar button:disabled { opacity: 0.3; cursor: not-allowed; transform: none; }
 #btnNextSetup { background: var(--orange); color: #000; }
+#btnNextSetup.pulse { animation: pulse-btn 1.2s ease-in-out infinite; }
+@keyframes pulse-btn {
+    0%, 100% { box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
+    50% { box-shadow: 0 0 18px var(--orange), 0 2px 8px rgba(0,0,0,0.4); }
+}
 #btnEnd { background: var(--green); color: #000; }
 #btnUndo { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
 #btnLoad { background: var(--accent); color: #000; }
@@ -136,6 +155,26 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
 
 <div class="main">
     <div id="leftPanel">
+
+        <!-- Alignment picker popup -->
+        <div id="alignPopup">
+            <h4>Align Image to Points</h4>
+            <p style="font-size:10px; color:var(--muted); margin-bottom:8px;">Click two locations on the map image, then select the matching known point for each.</p>
+            <div class="align-row">
+                <span class="align-num">1</span>
+                <span class="align-img" id="alignImg1">Click on map…</span>
+                <select id="alignPt1"><option value="">— select point —</option></select>
+            </div>
+            <div class="align-row">
+                <span class="align-num">2</span>
+                <span class="align-img" id="alignImg2">Click on map…</span>
+                <select id="alignPt2"><option value="">— select point —</option></select>
+            </div>
+            <div class="desc-btns">
+                <button id="alignOK" disabled>Apply Alignment</button>
+                <button id="alignSkip">Skip</button>
+            </div>
+        </div>
 
         <!-- Description editor popup -->
         <div id="descPopup">
@@ -297,15 +336,17 @@ btnLoad.addEventListener('click', () => {
     setups = [];
     currentSetup = null;
     currentBS = null;
-    mode = 'setup';
+    mode = 'idle';
     updatePointList();
     fitView();
     redraw();
-    updateStatus();
     updateButtons();
     ptCount.textContent = points.length;
-    btnExport.disabled = true;
-    showStatus(`Loaded ${points.length} points. <span>Click the setup point.</span>`);
+    btnNextSetup.disabled = false;
+    btnNextSetup.classList.add('pulse');
+    showStatus(`Loaded ${points.length} points. <span>Click Next Setup to begin.</span>`);
+    // Trigger alignment if image already loaded
+    if (bgImage) startAlignment();
 });
 
 // ── Fit view ──
@@ -345,11 +386,14 @@ function redraw() {
     ctx.fillStyle = '#1a1c1e';
     ctx.fillRect(0, 0, W, H);
 
-    // Draw background image (fills canvas for now; alignment comes later)
+    // Draw background image with alignment transform
     if (bgImage) {
         ctx.save();
         ctx.globalAlpha = 0.55;
-        ctx.drawImage(bgImage, 0, 0, W, H);
+        const s = bgTransform.s || 1;
+        const tx = bgTransform.tx || 0;
+        const ty = bgTransform.ty || 0;
+        ctx.drawImage(bgImage, tx, ty, bgImage.width * s, bgImage.height * s);
         ctx.globalAlpha = 1.0;
         ctx.restore();
     }
@@ -442,6 +486,11 @@ canvas.addEventListener('click', e => {
     const cx = (e.clientX - rect.left) * scaleX;
     const cy = (e.clientY - rect.top) * scaleY;
 
+    // ── Alignment picking ──
+    if (alignState && bgImage) {
+        if (handleAlignClick(cx, cy)) return;
+    }
+
     // ── Edit mode ──
     if (editMode) {
         // If revising, pick new foresight point
@@ -533,6 +582,15 @@ canvas.addEventListener('click', e => {
 
 // ── Next Setup ──
 btnNextSetup.addEventListener('click', () => {
+    // First click from idle — enter setup mode
+    if (mode === 'idle') {
+        mode = 'setup';
+        btnNextSetup.classList.remove('pulse');
+        updateStatus();
+        updateModeIndicator();
+        updateButtons();
+        return;
+    }
     // Close current group
     const grp = setups.find(s => s.setup.name === currentSetup?.name && !s._closed);
     if (grp) grp._closed = true;
@@ -689,7 +747,7 @@ function addLog(msg, cls) {
 
 function updateStatus() {
     const msgs = {
-        idle: 'Load points to begin.',
+        idle: points.length > 0 ? 'Points loaded. <span>Click Next Setup to begin.</span>' : 'Load points to begin.',
         setup: '<span>Click the setup point.</span>',
         bs: `Setup: <span>${currentSetup?.name}</span> — Click the backsight point.`,
         fs: `Setup: <span>${currentSetup?.name}</span>  BS: <span>${currentBS?.name}</span> — Click foresight(s) or Next Setup.`,
@@ -705,8 +763,9 @@ function updateModeIndicator() {
 }
 
 function updateButtons() {
+    const hasPoints = points.length > 0;
     btnUndo.disabled = (mode === 'idle' || mode === 'setup' || mode === 'done');
-    btnNextSetup.disabled = mode !== 'fs';
+    btnNextSetup.disabled = (!hasPoints || mode === 'bs' || mode === 'setup');
     btnEnd.disabled = mode !== 'fs';
 }
 
@@ -926,6 +985,112 @@ btnRevise.addEventListener('click', () => {
 // ── Canvas click — edit mode intercept ──
 // (injected at top of existing click handler)
 
+// ── Image Alignment ──
+const alignPopup = document.getElementById('alignPopup');
+let alignState = null;
+// bgTransform: { tx, ty, s } applied when drawing bgImage
+let bgTransform = { tx: 0, ty: 0, s: 1 };
+
+function startAlignment() {
+    if (!bgImage || points.length === 0) return;
+    // Populate point selects
+    ['alignPt1','alignPt2'].forEach(id => {
+        const sel = document.getElementById(id);
+        sel.innerHTML = '<option value="">— select point —</option>';
+        points.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.name;
+            opt.textContent = `${p.name}  N:${p.n.toFixed(3)} E:${p.e.toFixed(3)}`;
+            sel.appendChild(opt);
+        });
+    });
+    alignState = { step: 1, img1: null, img2: null };
+    document.getElementById('alignImg1').textContent = 'Click on map…';
+    document.getElementById('alignImg1').classList.remove('set');
+    document.getElementById('alignImg2').textContent = 'Click on map…';
+    document.getElementById('alignImg2').classList.remove('set');
+    document.getElementById('alignPt1').value = '';
+    document.getElementById('alignPt2').value = '';
+    document.getElementById('alignOK').disabled = true;
+    alignPopup.style.display = 'block';
+    showStatus('Alignment: <span>click point 1 on the map image.</span>');
+}
+
+function checkAlignReady() {
+    const p1 = document.getElementById('alignPt1').value;
+    const p2 = document.getElementById('alignPt2').value;
+    const ok = alignState && alignState.img1 && alignState.img2 && p1 && p2 && p1 !== p2;
+    document.getElementById('alignOK').disabled = !ok;
+}
+
+document.getElementById('alignPt1').addEventListener('change', checkAlignReady);
+document.getElementById('alignPt2').addEventListener('change', checkAlignReady);
+
+document.getElementById('alignOK').addEventListener('click', () => {
+    const p1name = document.getElementById('alignPt1').value;
+    const p2name = document.getElementById('alignPt2').value;
+    const wp1 = points.find(p => p.name === p1name);
+    const wp2 = points.find(p => p.name === p2name);
+    if (!wp1 || !wp2 || !alignState.img1 || !alignState.img2) return;
+
+    // Image pixel coords of the two clicked points
+    const ix1 = alignState.img1.ix, iy1 = alignState.img1.iy;
+    const ix2 = alignState.img2.ix, iy2 = alignState.img2.iy;
+
+    // Canvas coords of the two known world points
+    const c1 = toCanvas(wp1.e, wp1.n);
+    const c2 = toCanvas(wp2.e, wp2.n);
+
+    // Scale: ratio of canvas distance to image pixel distance
+    const canvasDist = Math.hypot(c2.cx - c1.cx, c2.cy - c1.cy);
+    const imgDist    = Math.hypot(ix2 - ix1, iy2 - iy1);
+    if (imgDist < 1) return;
+    const s = canvasDist / imgDist;
+
+    // Translation: after scaling, align img point 1 to canvas point 1
+    const tx = c1.cx - ix1 * s;
+    const ty = c1.cy - iy1 * s;
+
+    bgTransform = { tx, ty, s };
+    alignPopup.style.display = 'none';
+    alignState = null;
+    redraw();
+    showStatus('Image aligned. <span>Click Next Setup to begin traverse.</span>');
+});
+
+document.getElementById('alignSkip').addEventListener('click', () => {
+    alignPopup.style.display = 'none';
+    alignState = null;
+    showStatus(points.length > 0 ? 'Points loaded. <span>Click Next Setup to begin.</span>' : 'Load points to begin.');
+});
+
+// Canvas click intercept for alignment picking
+function handleAlignClick(cx, cy) {
+    if (!alignState) return false;
+    // Convert canvas pixel to image pixel coords
+    const W = canvas.width, H = canvas.height;
+    const ix = (cx - (bgTransform.tx || 0)) / (bgTransform.s || 1);
+    const iy = (cy - (bgTransform.ty || 0)) / (bgTransform.s || 1);
+
+    if (alignState.step === 1) {
+        alignState.img1 = { ix, iy };
+        alignState.step = 2;
+        const el = document.getElementById('alignImg1');
+        el.textContent = `px(${Math.round(ix)}, ${Math.round(iy)}) ✓`;
+        el.classList.add('set');
+        showStatus('Alignment: <span>click point 2 on the map image.</span>');
+    } else if (alignState.step === 2) {
+        alignState.img2 = { ix, iy };
+        alignState.step = 0;
+        const el = document.getElementById('alignImg2');
+        el.textContent = `px(${Math.round(ix)}, ${Math.round(iy)}) ✓`;
+        el.classList.add('set');
+        showStatus('Alignment: <span>select matching known points, then Apply.</span>');
+    }
+    checkAlignReady();
+    return true;
+}
+
 // ── Background Image ──
 const bgFileInput = document.getElementById('bgFileInput');
 const btnLoadBg = document.getElementById('btnLoadBg');
@@ -956,6 +1121,7 @@ bgFileInput.addEventListener('change', async () => {
                 bgStatus.textContent = `✓ ${file.name}`;
                 btnClearBg.style.display = '';
                 redraw();
+                if (points.length > 0) startAlignment();
             };
             img.src = url;
 
@@ -985,6 +1151,7 @@ bgFileInput.addEventListener('change', async () => {
                 bgStatus.textContent = `✓ ${file.name} (converted)`;
                 btnClearBg.style.display = '';
                 redraw();
+                if (points.length > 0) startAlignment();
             };
             img.src = offscreen.toDataURL('image/jpeg', 0.92);
 
@@ -1009,6 +1176,7 @@ bgFileInput.addEventListener('change', async () => {
                 bgStatus.textContent = `✓ ${file.name} (converted)`;
                 btnClearBg.style.display = '';
                 redraw();
+                if (points.length > 0) startAlignment();
             };
             img.src = offscreen.toDataURL('image/jpeg', 0.92);
 
@@ -1029,6 +1197,9 @@ bgFileInput.addEventListener('change', async () => {
 btnClearBg.addEventListener('click', () => {
     bgImage = null;
     bgFileName = '';
+    bgTransform = { tx: 0, ty: 0, s: 1 };
+    alignPopup.style.display = 'none';
+    alignState = null;
     bgStatus.style.display = 'none';
     btnClearBg.style.display = 'none';
     redraw();
@@ -1126,8 +1297,9 @@ btnClear.addEventListener('click', () => {
     editMode = false; editSnapshot = null; selectedEdit = null; revisingEdit = false;
     btnEdit.classList.remove('active'); btnEdit.textContent = '✎ Edit'; btnEdit.disabled = true;
     btnDelete.style.display = 'none'; btnRevise.style.display = 'none';
-    bgImage = null; bgFileName = '';
+    bgImage = null; bgFileName = ''; bgTransform = { tx: 0, ty: 0, s: 1 };
     bgStatus.style.display = 'none'; btnClearBg.style.display = 'none';
+    alignPopup.style.display = 'none'; alignState = null;
     document.getElementById('coordInput').value = '';
     pointList.innerHTML = '';
     traverseLog.innerHTML = '';
