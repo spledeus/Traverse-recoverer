@@ -732,8 +732,8 @@ function regroupSetups() {
 function editSelect(setupIdx, fsIdx) {
     selectedEdit = { setupIdx, fsIdx };
     revisingEdit = false;
-    btnDelete.style.display = '';
-    btnRevise.style.display = '';
+    btnDelete.style.display = 'inline-block';
+    btnRevise.style.display = 'inline-block';
     // highlight log
     document.querySelectorAll('.log-item').forEach(el => el.classList.remove('log-selected'));
     const logItems = document.querySelectorAll('.log-item.log-fs');
