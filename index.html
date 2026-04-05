@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Traverse Recoverer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tiff.js/1.0.0/tiff.min.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -164,6 +166,14 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
         <div class="panel-section" style="margin-top:auto; border-top: 1px solid var(--border); border-bottom: none;">
             <button class="btn btn-muted" id="btnClear">Clear All</button>
         </div>
+
+        <div class="panel-section" style="border-top: 1px solid var(--border); border-bottom: none;">
+            <h3>Background Image</h3>
+            <input type="file" id="bgFileInput" accept=".jpg,.jpeg,.png,.pdf,.tif,.tiff" style="display:none;">
+            <button class="btn btn-muted" id="btnLoadBg">&#128247; Load Image…</button>
+            <button class="btn btn-red" id="btnClearBg" style="margin-top:5px; display:none;">&#10005; Clear Image</button>
+            <div id="bgStatus" style="font-size:10px; color:var(--muted); margin-top:5px; display:none;"></div>
+        </div>
     </div>
 
     <div id="canvasWrap">
@@ -233,9 +243,13 @@ let isDragging = false, dragStart = null;
 
 // ── Edit mode state ──
 let editMode = false;
-let editSnapshot = null;       // deep copy of setups before edit session
-let selectedEdit = null;       // { setupIdx, fsIdx } — currently selected FS
-let revisingEdit = false;      // waiting for a new foresight click
+let editSnapshot = null;
+let selectedEdit = null;
+let revisingEdit = false;
+
+// ── Background image state ──
+let bgImage = null;
+let bgFileName = '';
 
 // ── Resize canvas ──
 function resizeCanvas() {
@@ -330,6 +344,15 @@ function redraw() {
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = '#1a1c1e';
     ctx.fillRect(0, 0, W, H);
+
+    // Draw background image (fills canvas for now; alignment comes later)
+    if (bgImage) {
+        ctx.save();
+        ctx.globalAlpha = 0.55;
+        ctx.drawImage(bgImage, 0, 0, W, H);
+        ctx.globalAlpha = 1.0;
+        ctx.restore();
+    }
 
     // Draw traverse lines
     setups.forEach((s, si) => {
@@ -903,6 +926,114 @@ btnRevise.addEventListener('click', () => {
 // ── Canvas click — edit mode intercept ──
 // (injected at top of existing click handler)
 
+// ── Background Image ──
+const bgFileInput = document.getElementById('bgFileInput');
+const btnLoadBg = document.getElementById('btnLoadBg');
+const btnClearBg = document.getElementById('btnClearBg');
+const bgStatus = document.getElementById('bgStatus');
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+btnLoadBg.addEventListener('click', () => bgFileInput.click());
+
+bgFileInput.addEventListener('change', async () => {
+    const file = bgFileInput.files[0];
+    if (!file) return;
+    bgFileInput.value = '';
+    const ext = file.name.split('.').pop().toLowerCase();
+    bgStatus.style.display = 'block';
+    bgStatus.textContent = 'Loading…';
+
+    try {
+        if (ext === 'jpg' || ext === 'jpeg' || ext === 'png') {
+            // Native image — load directly
+            const url = URL.createObjectURL(file);
+            const img = new Image();
+            img.onload = () => {
+                bgImage = img;
+                bgFileName = file.name;
+                URL.revokeObjectURL(url);
+                bgStatus.textContent = `✓ ${file.name}`;
+                btnClearBg.style.display = '';
+                redraw();
+            };
+            img.src = url;
+
+        } else if (ext === 'pdf') {
+            bgStatus.textContent = 'Converting PDF…';
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            if (pdf.numPages > 1) {
+                showPopup(
+                    'Multiple Pages Detected',
+                    `This PDF has ${pdf.numPages} pages. Please separate it into single-page files before loading.`,
+                    [{ label: 'OK', color: '#ef5350', cb: () => {} }]
+                );
+                bgStatus.style.display = 'none';
+                return;
+            }
+            const page = await pdf.getPage(1);
+            const viewport = page.getViewport({ scale: 2.0 }); // 2x for quality
+            const offscreen = document.createElement('canvas');
+            offscreen.width = viewport.width;
+            offscreen.height = viewport.height;
+            await page.render({ canvasContext: offscreen.getContext('2d'), viewport }).promise;
+            const img = new Image();
+            img.onload = () => {
+                bgImage = img;
+                bgFileName = file.name;
+                bgStatus.textContent = `✓ ${file.name} (converted)`;
+                btnClearBg.style.display = '';
+                redraw();
+            };
+            img.src = offscreen.toDataURL('image/jpeg', 0.92);
+
+        } else if (ext === 'tif' || ext === 'tiff') {
+            bgStatus.textContent = 'Converting TIFF…';
+            const arrayBuffer = await file.arrayBuffer();
+            const tiff = new Tiff({ buffer: arrayBuffer });
+            if (tiff.countDirectory() > 1) {
+                showPopup(
+                    'Multiple Pages Detected',
+                    `This TIFF has ${tiff.countDirectory()} pages. Please separate it into single-page files before loading.`,
+                    [{ label: 'OK', color: '#ef5350', cb: () => {} }]
+                );
+                bgStatus.style.display = 'none';
+                return;
+            }
+            const offscreen = tiff.toCanvas();
+            const img = new Image();
+            img.onload = () => {
+                bgImage = img;
+                bgFileName = file.name;
+                bgStatus.textContent = `✓ ${file.name} (converted)`;
+                btnClearBg.style.display = '';
+                redraw();
+            };
+            img.src = offscreen.toDataURL('image/jpeg', 0.92);
+
+        } else {
+            showPopup('Unsupported Format', 'Please load a JPG, PNG, PDF, or TIFF file.', [
+                { label: 'OK', color: '#4fc3f7', dark: true, cb: () => {} }
+            ]);
+            bgStatus.style.display = 'none';
+        }
+    } catch (err) {
+        showPopup('Load Error', `Could not load image: ${err.message}`, [
+            { label: 'OK', color: '#ef5350', cb: () => {} }
+        ]);
+        bgStatus.style.display = 'none';
+    }
+});
+
+btnClearBg.addEventListener('click', () => {
+    bgImage = null;
+    bgFileName = '';
+    bgStatus.style.display = 'none';
+    btnClearBg.style.display = 'none';
+    redraw();
+});
+
 // ── Export RW5 ──
 btnExport.addEventListener('click', () => {
     if (setups.length === 0) return;
@@ -967,7 +1098,8 @@ btnExport.addEventListener('click', () => {
         const bsDist = distance(occ, bs).toFixed(3);
 
         lines.push(`BK,OP${occ.name},BP${bs.name},BS${bsDMS},BC0.0000`);
-        lines.push(`BD,OP${occ.name},FP${bs.name},AR0.0000,ZE90.0000,SD${bsDist},--BS`);
+        const bsDesc = bs.desc ? `,--${bs.desc}` : '';
+        lines.push(`BD,OP${occ.name},FP${bs.name},AR0.0000,ZE90.0000,SD${bsDist}${bsDesc}`);
 
         s.foresights.forEach(fp => {
             const ar = angleRight(occ, bs, fp);
@@ -994,6 +1126,8 @@ btnClear.addEventListener('click', () => {
     editMode = false; editSnapshot = null; selectedEdit = null; revisingEdit = false;
     btnEdit.classList.remove('active'); btnEdit.textContent = '✎ Edit'; btnEdit.disabled = true;
     btnDelete.style.display = 'none'; btnRevise.style.display = 'none';
+    bgImage = null; bgFileName = '';
+    bgStatus.style.display = 'none'; btnClearBg.style.display = 'none';
     document.getElementById('coordInput').value = '';
     pointList.innerHTML = '';
     traverseLog.innerHTML = '';
