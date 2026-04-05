@@ -37,7 +37,17 @@ header h1 { font-size: 16px; font-weight: 600; letter-spacing: 0.04em; color: va
 .main { display: flex; flex: 1; overflow: hidden; }
 
 /* LEFT PANEL */
-#leftPanel { width: 280px; flex-shrink: 0; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+#leftPanel { width: 280px; flex-shrink: 0; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; position: relative; }
+
+/* Description popup — floats over the left panel coordinates area */
+#descPopup { display: none; position: absolute; top: 0; left: 0; right: 0; background: var(--surface); border-bottom: 2px solid var(--accent); z-index: 50; padding: 12px 14px; }
+#descPopup h4 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); margin-bottom: 6px; }
+#descPopup input { width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text); font-family: var(--font-mono); font-size: 12px; padding: 5px 8px; border-radius: 4px; outline: none; }
+#descPopup input:focus { border-color: var(--accent); }
+#descPopup .desc-btns { display: flex; gap: 6px; margin-top: 8px; }
+#descPopup .desc-btns button { flex: 1; padding: 5px 0; border: none; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; }
+#descOK { background: var(--accent); color: #000; }
+#descCancel { background: var(--surface2); color: var(--text); border: 1px solid var(--border) !important; }
 
 .panel-section { padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .panel-section h3 { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
@@ -63,6 +73,7 @@ textarea#coordInput:focus { outline: none; border-color: var(--accent); }
 .point-item:hover { background: var(--surface2); }
 .point-item .pt-name { color: var(--accent); min-width: 40px; font-weight: 600; }
 .point-item .pt-coords { color: var(--muted); font-size: 11px; }
+.point-item .pt-desc { color: var(--green); font-size: 10px; font-style: italic; margin-left: auto; max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .point-item.is-setup .pt-name { color: var(--green); }
 .point-item.is-bs .pt-name { color: var(--orange); }
 
@@ -123,6 +134,16 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
 
 <div class="main">
     <div id="leftPanel">
+
+        <!-- Description editor popup -->
+        <div id="descPopup">
+            <h4 id="descPopupTitle">Point Description</h4>
+            <input type="text" id="descInput" placeholder="Enter description…" maxlength="40">
+            <div class="desc-btns">
+                <button id="descOK">OK</button>
+                <button id="descCancel">Cancel</button>
+            </div>
+        </div>
         <div class="panel-section">
             <h3>Coordinates</h3>
             <textarea id="coordInput" placeholder="Name,N,E or Name,N,E,Z,Desc&#10;1,5000,5000&#10;2,5100,5020&#10;3,5080,5150"></textarea>
@@ -380,6 +401,11 @@ function redraw() {
         ctx.fillStyle = '#e8eaed';
         ctx.font = 'bold 11px Courier New';
         ctx.fillText(p.name, cx + 9, cy - 4);
+        if (p.desc) {
+            ctx.fillStyle = '#66bb6a';
+            ctx.font = '10px Courier New';
+            ctx.fillText(p.desc, cx + 9, cy + 8);
+        }
     });
 }
 
@@ -411,6 +437,14 @@ canvas.addEventListener('click', e => {
             redraw();
             showStatus('Edit mode: click a foresight line or log entry to select it.');
             return;
+        }
+        // Check if clicking near a point — open description popup (not during revise)
+        if (!revisingEdit) {
+            const ptHit = findNearest(cx, cy);
+            if (ptHit) {
+                openDescPopup(ptHit);
+                return;
+            }
         }
         // Otherwise check for FS line click by midpoint proximity
         let found = false;
@@ -594,7 +628,8 @@ function updatePointList() {
         div.className = 'point-item';
         if (currentSetup && p.name === currentSetup.name) div.classList.add('is-setup');
         else if (currentBS && p.name === currentBS.name) div.classList.add('is-bs');
-        div.innerHTML = `<span class="pt-name">${p.name}</span><span class="pt-coords">N:${p.n.toFixed(3)} E:${p.e.toFixed(3)}</span>`;
+        div.innerHTML = `<span class="pt-name">${p.name}</span><span class="pt-coords">N:${p.n.toFixed(3)} E:${p.e.toFixed(3)}</span>${p.desc ? `<span class="pt-desc"> ${p.desc}</span>` : ''}`;
+        div.addEventListener('click', () => { if (editMode) openDescPopup(p); });
         pointList.appendChild(div);
     });
     // Enable edit button whenever we have closed setups with foresights
@@ -759,6 +794,37 @@ function editClearSelection() {
     document.querySelectorAll('.log-item').forEach(el => el.classList.remove('log-selected'));
     redraw();
 }
+
+// ── Description popup ──
+const descPopup = document.getElementById('descPopup');
+const descInput = document.getElementById('descInput');
+let descTargetPoint = null;
+
+function openDescPopup(pt) {
+    descTargetPoint = pt;
+    document.getElementById('descPopupTitle').textContent = `Description — Point ${pt.name}`;
+    descInput.value = pt.desc || '';
+    descPopup.style.display = 'block';
+    descInput.focus();
+    descInput.select();
+}
+
+function closeDescPopup(save) {
+    if (save && descTargetPoint) {
+        descTargetPoint.desc = descInput.value.trim();
+        updatePointList();
+        redraw();
+    }
+    descTargetPoint = null;
+    descPopup.style.display = 'none';
+}
+
+document.getElementById('descOK').addEventListener('click', () => closeDescPopup(true));
+document.getElementById('descCancel').addEventListener('click', () => closeDescPopup(false));
+descInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); closeDescPopup(true); }
+    if (e.key === 'Escape') { e.preventDefault(); closeDescPopup(false); }
+});
 
 // ── Edit button ──
 btnEdit.addEventListener('click', () => {
