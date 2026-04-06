@@ -4,8 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Traverse Recoverer</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/tiff.js/1.0.0/tiff.min.js"></script>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -249,7 +247,10 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
     </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@2.13.216/legacy/build/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tiff.js/1.0.0/tiff.min.js"></script>
 <script>
+const pdfjsLib = window['pdfjs-dist/build/pdf'];
 const canvas = document.getElementById('mapCanvas');
 const ctx = canvas.getContext('2d');
 const statusBar = document.getElementById('statusBar');
@@ -1117,7 +1118,16 @@ const btnClearBg = document.getElementById('btnClearBg');
 const btnRealign = document.getElementById('btnRealign');
 const bgStatus = document.getElementById('bgStatus');
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    // Load PDF.js worker as a blob to avoid fake worker in file:// context
+    fetch('https://cdn.jsdelivr.net/npm/pdfjs-dist@2.13.216/legacy/build/pdf.worker.min.js')
+        .then(r => r.blob())
+        .then(blob => {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob);
+        })
+        .catch(() => {
+            // Fallback to direct URL — will use fake worker but still functional
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@2.13.216/legacy/build/pdf.worker.min.js';
+        });
 
 btnLoadBg.addEventListener('click', () => bgFileInput.click());
 
