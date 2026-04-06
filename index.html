@@ -386,14 +386,23 @@ function redraw() {
     ctx.fillStyle = '#1a1c1e';
     ctx.fillRect(0, 0, W, H);
 
-    // Draw background image with alignment transform
-    if (bgImage) {
+    // Draw background image — reproject from world coords each frame so it pans/zooms with the map
+    if (bgImage && bgTransform.imgScale) {
         ctx.save();
         ctx.globalAlpha = 0.55;
-        const s = bgTransform.s || 1;
-        const tx = bgTransform.tx || 0;
-        const ty = bgTransform.ty || 0;
-        ctx.drawImage(bgImage, tx, ty, bgImage.width * s, bgImage.height * s);
+        // Canvas pixel size of one image pixel
+        const canvasPerImg = bgTransform.imgScale * scale;
+        // Canvas position of image origin (world coord of top-left pixel)
+        const origin = toCanvas(bgTransform.originE, bgTransform.originN);
+        ctx.drawImage(bgImage, origin.cx, origin.cy,
+            bgImage.width * canvasPerImg, bgImage.height * canvasPerImg);
+        ctx.globalAlpha = 1.0;
+        ctx.restore();
+    } else if (bgImage) {
+        // Not yet aligned — fill canvas as preview
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.drawImage(bgImage, 0, 0, W, H);
         ctx.globalAlpha = 1.0;
         ctx.restore();
     }
@@ -989,7 +998,7 @@ btnRevise.addEventListener('click', () => {
 const alignPopup = document.getElementById('alignPopup');
 let alignState = null;
 // bgTransform: { tx, ty, s } applied when drawing bgImage
-let bgTransform = { tx: 0, ty: 0, s: 1 };
+let bgTransform = { originE: 0, originN: 0, imgScale: 0 };
 
 function startAlignment() {
     if (!bgImage || points.length === 0) return;
@@ -1037,21 +1046,23 @@ document.getElementById('alignOK').addEventListener('click', () => {
     const ix1 = alignState.img1.ix, iy1 = alignState.img1.iy;
     const ix2 = alignState.img2.ix, iy2 = alignState.img2.iy;
 
-    // Canvas coords of the two known world points
-    const c1 = toCanvas(wp1.e, wp1.n);
-    const c2 = toCanvas(wp2.e, wp2.n);
+    // World distance between the two known points
+    const worldDist = Math.hypot(wp2.e - wp1.e, wp2.n - wp1.n);
+    const imgDist   = Math.hypot(ix2 - ix1, iy2 - iy1);
+    if (imgDist < 1 || worldDist < 0.0001) return;
 
-    // Scale: ratio of canvas distance to image pixel distance
-    const canvasDist = Math.hypot(c2.cx - c1.cx, c2.cy - c1.cy);
-    const imgDist    = Math.hypot(ix2 - ix1, iy2 - iy1);
-    if (imgDist < 1) return;
-    const s = canvasDist / imgDist;
+    // Store alignment in world space:
+    // imgScale = world units per image pixel
+    // imgOrigin = world coords (e, n) corresponding to image pixel (0, 0)
+    const imgScale = worldDist / imgDist;
 
-    // Translation: after scaling, align img point 1 to canvas point 1
-    const tx = c1.cx - ix1 * s;
-    const ty = c1.cy - iy1 * s;
+    // From wp1: world = imgOrigin + imgPixel * imgScale (with N axis flipped)
+    // imgOrigin.e = wp1.e - ix1 * imgScale
+    // imgOrigin.n = wp1.n + iy1 * imgScale  (image y increases downward, n increases upward)
+    const originE = wp1.e - ix1 * imgScale;
+    const originN = wp1.n + iy1 * imgScale;
 
-    bgTransform = { tx, ty, s };
+    bgTransform = { originE, originN, imgScale };
     alignPopup.style.display = 'none';
     alignState = null;
     redraw();
@@ -1067,10 +1078,17 @@ document.getElementById('alignSkip').addEventListener('click', () => {
 // Canvas click intercept for alignment picking
 function handleAlignClick(cx, cy) {
     if (!alignState) return false;
-    // Convert canvas pixel to image pixel coords
-    const W = canvas.width, H = canvas.height;
-    const ix = (cx - (bgTransform.tx || 0)) / (bgTransform.s || 1);
-    const iy = (cy - (bgTransform.ty || 0)) / (bgTransform.s || 1);
+    // If already aligned, convert through world transform; otherwise use preview (full-canvas) mapping
+    let ix, iy;
+    if (bgTransform.imgScale) {
+        const world = toWorld(cx, cy);
+        ix = (world.e - bgTransform.originE) / bgTransform.imgScale;
+        iy = (bgTransform.originN - world.n) / bgTransform.imgScale;
+    } else {
+        // Preview mode: image stretched to fill canvas
+        ix = cx / canvas.width  * bgImage.width;
+        iy = cy / canvas.height * bgImage.height;
+    }
 
     if (alignState.step === 1) {
         alignState.img1 = { ix, iy };
@@ -1197,7 +1215,7 @@ bgFileInput.addEventListener('change', async () => {
 btnClearBg.addEventListener('click', () => {
     bgImage = null;
     bgFileName = '';
-    bgTransform = { tx: 0, ty: 0, s: 1 };
+    bgTransform = { originE: 0, originN: 0, imgScale: 0 };
     alignPopup.style.display = 'none';
     alignState = null;
     bgStatus.style.display = 'none';
@@ -1297,7 +1315,7 @@ btnClear.addEventListener('click', () => {
     editMode = false; editSnapshot = null; selectedEdit = null; revisingEdit = false;
     btnEdit.classList.remove('active'); btnEdit.textContent = '✎ Edit'; btnEdit.disabled = true;
     btnDelete.style.display = 'none'; btnRevise.style.display = 'none';
-    bgImage = null; bgFileName = ''; bgTransform = { tx: 0, ty: 0, s: 1 };
+    bgImage = null; bgFileName = ''; bgTransform = { originE: 0, originN: 0, imgScale: 0 };
     bgStatus.style.display = 'none'; btnClearBg.style.display = 'none';
     alignPopup.style.display = 'none'; alignState = null;
     document.getElementById('coordInput').value = '';
