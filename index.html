@@ -205,7 +205,7 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
 
         <div class="panel-section" style="border-top: 1px solid var(--border); border-bottom: none;">
             <h3>Background Image</h3>
-            <button class="btn btn-orange" id="btnRealign" style="margin-top:5px; display:none;">&#8982; Re-align Image</button>
+            <button class="btn btn-orange" id="btnRealign" style="margin-top:5px; display:none;">&#9906; Align Image</button>
             <button class="btn btn-red" id="btnClearBg" style="margin-top:5px; display:none;">&#10005; Clear Image</button>
             <div id="bgStatus" style="font-size:10px; color:var(--muted); margin-top:5px; display:none;"></div>
         </div>
@@ -347,8 +347,6 @@ btnLoad.addEventListener('click', () => {
     btnNextSetup.disabled = false;
     btnNextSetup.classList.add('pulse');
     showStatus(`Loaded ${points.length} points. <span>Click Next Setup to begin.</span>`);
-    // Trigger alignment if image already loaded
-    if (bgImage) startAlignment();
 });
 
 // ── Fit view ──
@@ -363,6 +361,32 @@ function fitView() {
     scale = Math.min((W - pad*2) / rangeX, (H - pad*2) / rangeY);
     pan.x = W/2 - (minX + rangeX/2) * scale;
     pan.y = H/2 + (minY + rangeY/2) * scale;
+}
+
+// ── Fit image to current canvas extent (called on image load) ──
+function fitImageToCanvas() {
+    if (!bgImage) return;
+    const W = canvas.width, H = canvas.height;
+    // Work out what world-space rectangle the canvas currently shows
+    const topLeft     = toWorld(0, 0);
+    const bottomRight = toWorld(W, H);
+    const worldW = bottomRight.e - topLeft.e;
+    const worldH = topLeft.n   - bottomRight.n;   // n decreases downward in canvas
+    // Scale: fit image into that world rectangle (preserve aspect, fill)
+    const imgAspect    = bgImage.width / bgImage.height;
+    const worldAspect  = worldW / worldH;
+    let imgScale;
+    if (imgAspect > worldAspect) {
+        imgScale = worldW / bgImage.width;   // width-limited
+    } else {
+        imgScale = worldH / bgImage.height;  // height-limited
+    }
+    // Centre the image in the current view
+    const imgWorldW = bgImage.width  * imgScale;
+    const imgWorldH = bgImage.height * imgScale;
+    const originE = topLeft.e + (worldW - imgWorldW) / 2;
+    const originN = topLeft.n - (worldH - imgWorldH) / 2;
+    bgTransform = { originE, originN, imgScale, rotation: 0 };
 }
 
 // ── Coordinate transforms ──
@@ -388,23 +412,16 @@ function redraw() {
     ctx.fillStyle = '#1a1c1e';
     ctx.fillRect(0, 0, W, H);
 
-    // Draw background image
-    if (bgImage) {
+    // Draw background image — always geo-locked, pans/zooms with the map
+    if (bgImage && bgTransform.imgScale) {
         ctx.save();
-        if (bgTransform.imgScale && !alignState) {
-            // Aligned — reproject from world coords so it pans/zooms with the map
-            ctx.globalAlpha = 0.55;
-            const canvasPerImg = bgTransform.imgScale * scale;
-            const origin = toCanvas(bgTransform.originE, bgTransform.originN);
-            const rot = bgTransform.rotation || 0;
-            ctx.translate(origin.cx, origin.cy);
-            ctx.rotate(rot);
-            ctx.drawImage(bgImage, 0, 0, bgImage.width * canvasPerImg, bgImage.height * canvasPerImg);
-        } else {
-            // Locked for alignment — fill canvas so user can click spots on it
-            ctx.globalAlpha = 0.6;
-            ctx.drawImage(bgImage, 0, 0, W, H);
-        }
+        ctx.globalAlpha = 0.55;
+        const canvasPerImg = bgTransform.imgScale * scale;
+        const origin = toCanvas(bgTransform.originE, bgTransform.originN);
+        const rot = bgTransform.rotation || 0;
+        ctx.translate(origin.cx, origin.cy);
+        ctx.rotate(rot);
+        ctx.drawImage(bgImage, 0, 0, bgImage.width * canvasPerImg, bgImage.height * canvasPerImg);
         ctx.globalAlpha = 1.0;
         ctx.restore();
     }
@@ -461,11 +478,18 @@ function redraw() {
 
     // Draw alignment markers when in alignment mode
     if (alignState && bgImage) {
-        // Draw crosshairs on the two image clicks (image fills canvas, so scale directly)
+        // Draw crosshairs on the two image clicks — convert img pixel back to canvas via bgTransform
         const drawImgCrosshair = (imgClick, color) => {
             if (!imgClick) return;
-            const cx2 = imgClick.ix / bgImage.width  * W;
-            const cy2 = imgClick.iy / bgImage.height * H;
+            const rot = bgTransform.rotation || 0;
+            const cosR = Math.cos(rot), sinR = Math.sin(rot);
+            const dxImg = imgClick.ix * bgTransform.imgScale;
+            const dyImg = imgClick.iy * bgTransform.imgScale;
+            const dxW =  dxImg * cosR - dyImg * sinR;
+            const dyW =  dxImg * sinR + dyImg * cosR;
+            const worldE = bgTransform.originE + dxW;
+            const worldN = bgTransform.originN - dyW;
+            const { cx: cx2, cy: cy2 } = toCanvas(worldE, worldN);
             ctx.save();
             ctx.strokeStyle = color;
             ctx.lineWidth = 2;
@@ -1083,13 +1107,18 @@ function startAlignment() {
     showStatus('Alignment: <span>click a known spot on the image.</span>');
 }
 
-// Convert a raw canvas click to image pixel coords (image locked = fills canvas)
+// Convert a canvas click to image pixel coords via the current bgTransform
 function canvasToImgPixel(cx, cy) {
-    // Image is stretched to fill canvas while locked
-    return {
-        ix: cx / canvas.width  * bgImage.width,
-        iy: cy / canvas.height * bgImage.height
-    };
+    const world = toWorld(cx, cy);
+    const rot = bgTransform.rotation || 0;
+    // Offset from image origin in world units
+    const dxW = world.e - bgTransform.originE;
+    const dyW = -(world.n - bgTransform.originN); // flip N→canvas-y
+    // Undo rotation
+    const cosR = Math.cos(-rot), sinR = Math.sin(-rot);
+    const dxImg = (dxW * cosR - dyW * sinR) / bgTransform.imgScale;
+    const dyImg = (dxW * sinR + dyW * cosR) / bgTransform.imgScale;
+    return { ix: dxImg, iy: dyImg };
 }
 
 // Canvas click intercept for alignment — returns true if it consumed the click
@@ -1218,9 +1247,10 @@ bgFileInput.addEventListener('change', async () => {
                 bgFileName = file.name;
                 URL.revokeObjectURL(url);
                 bgStatus.textContent = `✓ ${file.name}`;
-                btnClearBg.style.display = ''; btnRealign.style.display = ''
+                btnClearBg.style.display = ''; btnRealign.style.display = '';
+                fitImageToCanvas();
                 redraw();
-                if (points.length > 0) startAlignment();
+                showStatus('Image loaded. Pan and zoom freely, then click <span>Align Image</span> when ready.');
             };
             img.src = url;
 
@@ -1250,8 +1280,9 @@ bgFileInput.addEventListener('change', async () => {
                 bgFileName = file.name;
                 bgStatus.textContent = `✓ ${file.name} (converted)`;
                 btnClearBg.style.display = ''; btnRealign.style.display = '';
+                fitImageToCanvas();
                 redraw();
-                if (points.length > 0) startAlignment();
+                showStatus('Image loaded. Pan and zoom freely, then click <span>Align Image</span> when ready.');
             };
             img.src = offscreen.toDataURL('image/jpeg', 0.92);
 
@@ -1274,9 +1305,10 @@ bgFileInput.addEventListener('change', async () => {
                 bgImage = img;
                 bgFileName = file.name;
                 bgStatus.textContent = `✓ ${file.name} (converted)`;
-                btnClearBg.style.display = ''; btnRealign.style.display = ''
+                btnClearBg.style.display = ''; btnRealign.style.display = '';
+                fitImageToCanvas();
                 redraw();
-                if (points.length > 0) startAlignment();
+                showStatus('Image loaded. Pan and zoom freely, then click <span>Align Image</span> when ready.');
             };
             img.src = offscreen.toDataURL('image/jpeg', 0.92);
 
