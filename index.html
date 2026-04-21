@@ -873,6 +873,44 @@ function angleRight(setupPt, bsPt, fsPt) {
 }
 
 // ── Popup helper ──
+function showPrompt(title, msg, defaultVal, cb) {
+    // Reuse popup overlay with an input field
+    document.getElementById('popupTitle').textContent = title;
+    const msgEl = document.getElementById('popupMsg');
+    msgEl.innerHTML = '';
+    const lbl = document.createElement('p');
+    lbl.textContent = msg;
+    lbl.style.marginBottom = '8px';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = defaultVal || '';
+    input.style.cssText = 'width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-family:var(--font-mono);font-size:13px;padding:6px 8px;border-radius:4px;outline:none;box-sizing:border-box;';
+    input.addEventListener('focus', () => input.style.borderColor = 'var(--accent)');
+    input.addEventListener('blur',  () => input.style.borderColor = 'var(--border)');
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { ok(); }
+        if (e.key === 'Escape') { cancel(); }
+    });
+    msgEl.appendChild(lbl);
+    msgEl.appendChild(input);
+    const btns = document.getElementById('popupBtns');
+    btns.innerHTML = '';
+    const hide = () => { document.getElementById('popupOverlay').classList.remove('show'); msgEl.innerHTML = ''; };
+    const ok = () => { hide(); cb(input.value); };
+    const cancel = () => { hide(); cb(null); };
+    [['Export', 'var(--purple)', ok], ['Cancel', 'var(--surface2)', cancel]].forEach(([label, bg, fn]) => {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.style.background = bg;
+        b.style.color = bg === 'var(--surface2)' ? 'var(--text)' : '#fff';
+        if (bg === 'var(--surface2)') b.style.border = '1px solid var(--border)';
+        b.onclick = fn;
+        btns.appendChild(b);
+    });
+    document.getElementById('popupOverlay').classList.add('show');
+    setTimeout(() => { input.select(); input.focus(); }, 50);
+}
+
 function showPopup(title, msg, buttons) {
     // buttons: [{ label, color, cb }]
     document.getElementById('popupTitle').textContent = title;
@@ -1344,12 +1382,20 @@ btnClearBg.addEventListener('click', () => {
 btnExport.addEventListener('click', () => {
     if (setups.length === 0) return;
 
+    showPrompt('Export RW5', 'Enter a job name for this file:', 'Traverse Export', (jobName) => {
+        if (jobName === null) return; // cancelled
+        jobName = jobName.trim() || 'Traverse Export';
+        doExport(jobName);
+    });
+});
+
+function doExport(jobName) {
     const lines = [];
     const now = new Date();
     const dateStr = `${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}-${now.getFullYear()}`;
     const timeStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
 
-    lines.push(`JB,NMTraverse Builder Export,DT${dateStr},TM${timeStr}`);
+    lines.push(`JB,NM${jobName},DT${dateStr},TM${timeStr}`);
     lines.push(`MO,AD0,UN2,SF1.00000000,EC0,EO0.0,AU0`);
     lines.push(``);
 
@@ -1421,10 +1467,11 @@ btnExport.addEventListener('click', () => {
     const blob = new Blob([content], { type: 'text/plain' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `traverse-recoverer-${dateStr}.rw5`;
+    const safeName = jobName.replace(/[^a-z0-9_\-]/gi, '_');
+    a.download = `${safeName}-${dateStr}.rw5`;
     a.click();
     URL.revokeObjectURL(a.href);
-});
+}
 
 // ── Clear All ──
 btnClear.addEventListener('click', () => {
