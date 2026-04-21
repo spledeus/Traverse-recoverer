@@ -159,19 +159,14 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
         <!-- Alignment picker popup -->
         <div id="alignPopup">
             <h4>Align Image to Points</h4>
-            <p style="font-size:10px; color:var(--muted); margin-bottom:8px;">Click two locations on the map image, then select the matching known point for each.</p>
-            <div class="align-row">
-                <span class="align-num">1</span>
-                <span class="align-img" id="alignImg1">Click on map…</span>
-                <select id="alignPt1"><option value="">— select point —</option></select>
-            </div>
-            <div class="align-row">
-                <span class="align-num">2</span>
-                <span class="align-img" id="alignImg2">Click on map…</span>
-                <select id="alignPt2"><option value="">— select point —</option></select>
+            <div id="alignStepList" style="margin-bottom:8px;">
+                <div class="align-row" id="alignRow1"><span class="align-num" id="alignNum1">❶</span><span class="align-img" id="alignStep1">Click a spot on the image</span></div>
+                <div class="align-row" id="alignRow2"><span class="align-num" id="alignNum2" style="color:var(--muted)">❷</span><span class="align-img" id="alignStep2" style="color:var(--muted)">Click its matching survey point</span></div>
+                <div class="align-row" id="alignRow3"><span class="align-num" id="alignNum3" style="color:var(--muted)">❸</span><span class="align-img" id="alignStep3" style="color:var(--muted)">Click a second spot on the image</span></div>
+                <div class="align-row" id="alignRow4"><span class="align-num" id="alignNum4" style="color:var(--muted)">❹</span><span class="align-img" id="alignStep4" style="color:var(--muted)">Click its matching survey point</span></div>
             </div>
             <div class="desc-btns">
-                <button id="alignOK" disabled>Apply Alignment</button>
+                <button id="alignOK" disabled>Align Image</button>
                 <button id="alignSkip">Skip</button>
             </div>
         </div>
@@ -294,6 +289,8 @@ let revisingEdit = false;
 // ── Background image state ──
 let bgImage = null;
 let bgFileName = '';
+let alignState = null;
+let bgTransform = { originE: 0, originN: 0, imgScale: 0, rotation: 0 };
 
 // ── Resize canvas ──
 function resizeCanvas() {
@@ -391,26 +388,23 @@ function redraw() {
     ctx.fillStyle = '#1a1c1e';
     ctx.fillRect(0, 0, W, H);
 
-    // Draw background image — reproject from world coords each frame so it pans/zooms with the map
-    if (bgImage && bgTransform.imgScale) {
+    // Draw background image
+    if (bgImage) {
         ctx.save();
-        ctx.globalAlpha = 0.55;
-        // Canvas pixel size of one image pixel
-        const canvasPerImg = bgTransform.imgScale * scale;
-        // Canvas position of image pixel (0,0) in canvas coords
-        const origin = toCanvas(bgTransform.originE, bgTransform.originN);
-        // Apply rotation around the image origin point
-        const rot = bgTransform.rotation || 0;
-        ctx.translate(origin.cx, origin.cy);
-        ctx.rotate(rot);
-        ctx.drawImage(bgImage, 0, 0, bgImage.width * canvasPerImg, bgImage.height * canvasPerImg);
-        ctx.globalAlpha = 1.0;
-        ctx.restore();
-    } else if (bgImage) {
-        // Not yet aligned — fill canvas as preview
-        ctx.save();
-        ctx.globalAlpha = 0.35;
-        ctx.drawImage(bgImage, 0, 0, W, H);
+        if (bgTransform.imgScale && !alignState) {
+            // Aligned — reproject from world coords so it pans/zooms with the map
+            ctx.globalAlpha = 0.55;
+            const canvasPerImg = bgTransform.imgScale * scale;
+            const origin = toCanvas(bgTransform.originE, bgTransform.originN);
+            const rot = bgTransform.rotation || 0;
+            ctx.translate(origin.cx, origin.cy);
+            ctx.rotate(rot);
+            ctx.drawImage(bgImage, 0, 0, bgImage.width * canvasPerImg, bgImage.height * canvasPerImg);
+        } else {
+            // Locked for alignment — fill canvas so user can click spots on it
+            ctx.globalAlpha = 0.6;
+            ctx.drawImage(bgImage, 0, 0, W, H);
+        }
         ctx.globalAlpha = 1.0;
         ctx.restore();
     }
@@ -465,6 +459,37 @@ function redraw() {
         ctx.setLineDash([]);
     }
 
+    // Draw alignment markers when in alignment mode
+    if (alignState && bgImage) {
+        // Draw crosshairs on the two image clicks (image fills canvas, so scale directly)
+        const drawImgCrosshair = (imgClick, color) => {
+            if (!imgClick) return;
+            const cx2 = imgClick.ix / bgImage.width  * W;
+            const cy2 = imgClick.iy / bgImage.height * H;
+            ctx.save();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(cx2 - 14, cy2); ctx.lineTo(cx2 + 14, cy2); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(cx2, cy2 - 14); ctx.lineTo(cx2, cy2 + 14); ctx.stroke();
+            ctx.beginPath(); ctx.arc(cx2, cy2, 8, 0, Math.PI * 2);
+            ctx.strokeStyle = color; ctx.stroke();
+            ctx.restore();
+        };
+        drawImgCrosshair(alignState.img1, '#ffa726');
+        drawImgCrosshair(alignState.img2, '#4fc3f7');
+        // Highlight matched survey points
+        const drawPtHighlight = (pt, color) => {
+            if (!pt) return;
+            const { cx: px, cy: py } = toCanvas(pt.e, pt.n);
+            ctx.save();
+            ctx.beginPath(); ctx.arc(px, py, 14, 0, Math.PI * 2);
+            ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.stroke();
+            ctx.restore();
+        };
+        drawPtHighlight(alignState.pt1, '#ffa726');
+        drawPtHighlight(alignState.pt2, '#4fc3f7');
+    }
+
     // Draw points
     points.forEach(p => {
         const { cx, cy } = toCanvas(p.e, p.n);
@@ -504,8 +529,10 @@ canvas.addEventListener('click', e => {
     const cy = (e.clientY - rect.top) * scaleY;
 
     // ── Alignment picking ──
-    if (alignState && bgImage) {
-        if (handleAlignClick(cx, cy)) return;
+    if (alignState) {
+        handleAlignClick(cx, cy);
+        redraw();
+        return;
     }
 
     // ── Edit mode ──
@@ -1004,86 +1031,135 @@ btnRevise.addEventListener('click', () => {
 
 // ── Image Alignment ──
 const alignPopup = document.getElementById('alignPopup');
-let alignState = null;
-// bgTransform: { tx, ty, s } applied when drawing bgImage
-let bgTransform = { originE: 0, originN: 0, imgScale: 0, rotation: 0 };
+
+// alignState steps:
+//   'img1' — waiting for click on image (locked, fills canvas)
+//   'pt1'  — waiting for click on a real survey point
+//   'img2' — waiting for click on image again
+//   'pt2'  — waiting for click on a real survey point → enables Align button
+
+function alignStepUI() {
+    const steps = ['img1','pt1','img2','pt2'];
+    const labels = [
+        'Click a spot on the image ✓',
+        'Now click its matching survey point ✓',
+        'Click a second spot on the image ✓',
+        'Now click its matching survey point ✓'
+    ];
+    const pending = [
+        'Click a spot on the image',
+        'Click its matching survey point',
+        'Click a second spot on the image',
+        'Click its matching survey point'
+    ];
+    const stepIdx = { img1:0, pt1:1, img2:2, pt2:3 };
+    const current = alignState ? stepIdx[alignState.step] : -1;
+    for (let i = 1; i <= 4; i++) {
+        const num = document.getElementById(`alignNum${i}`);
+        const lbl = document.getElementById(`alignStep${i}`);
+        const idx = i - 1;
+        if (alignState && alignState.done && alignState.done >= i) {
+            num.style.color = 'var(--green)';
+            lbl.style.color = 'var(--green)';
+            lbl.textContent = labels[idx];
+        } else if (idx === current) {
+            num.style.color = 'var(--orange)';
+            lbl.style.color = 'var(--text)';
+            lbl.textContent = pending[idx];
+        } else {
+            num.style.color = 'var(--muted)';
+            lbl.style.color = 'var(--muted)';
+            lbl.textContent = pending[idx];
+        }
+    }
+    document.getElementById('alignOK').disabled = !(alignState && alignState.step === 'done');
+}
 
 function startAlignment() {
     if (!bgImage || points.length === 0) return;
-    // Populate point selects
-    ['alignPt1','alignPt2'].forEach(id => {
-        const sel = document.getElementById(id);
-        sel.innerHTML = '<option value="">— select point —</option>';
-        points.forEach(p => {
-            const opt = document.createElement('option');
-            opt.value = p.name;
-            opt.textContent = `${p.name}  N:${p.n.toFixed(3)} E:${p.e.toFixed(3)}`;
-            sel.appendChild(opt);
-        });
-    });
-    alignState = { step: 1, img1: null, img2: null };
-    document.getElementById('alignImg1').textContent = 'Click on map…';
-    document.getElementById('alignImg1').classList.remove('set');
-    document.getElementById('alignImg2').textContent = 'Click on map…';
-    document.getElementById('alignImg2').classList.remove('set');
-    document.getElementById('alignPt1').value = '';
-    document.getElementById('alignPt2').value = '';
-    document.getElementById('alignOK').disabled = true;
+    alignState = { step: 'img1', img1: null, pt1: null, img2: null, pt2: null, done: 0 };
     alignPopup.style.display = 'block';
-    showStatus('Alignment: <span>click point 1 on the map image.</span>');
+    alignStepUI();
+    showStatus('Alignment: <span>click a known spot on the image.</span>');
 }
 
-function checkAlignReady() {
-    const p1 = document.getElementById('alignPt1').value;
-    const p2 = document.getElementById('alignPt2').value;
-    const ok = alignState && alignState.img1 && alignState.img2 && p1 && p2 && p1 !== p2;
-    document.getElementById('alignOK').disabled = !ok;
+// Convert a raw canvas click to image pixel coords (image locked = fills canvas)
+function canvasToImgPixel(cx, cy) {
+    // Image is stretched to fill canvas while locked
+    return {
+        ix: cx / canvas.width  * bgImage.width,
+        iy: cy / canvas.height * bgImage.height
+    };
 }
 
-document.getElementById('alignPt1').addEventListener('change', checkAlignReady);
-document.getElementById('alignPt2').addEventListener('change', checkAlignReady);
+// Canvas click intercept for alignment — returns true if it consumed the click
+function handleAlignClick(cx, cy) {
+    if (!alignState || alignState.step === 'done') return false;
 
-document.getElementById('alignOK').addEventListener('click', () => {
-    const p1name = document.getElementById('alignPt1').value;
-    const p2name = document.getElementById('alignPt2').value;
-    const wp1 = points.find(p => p.name === p1name);
-    const wp2 = points.find(p => p.name === p2name);
-    if (!wp1 || !wp2 || !alignState.img1 || !alignState.img2) return;
+    if (alignState.step === 'img1') {
+        const { ix, iy } = canvasToImgPixel(cx, cy);
+        alignState.img1 = { ix, iy };
+        alignState.done = 1;
+        alignState.step = 'pt1';
+        alignStepUI();
+        showStatus('Alignment: <span>click the matching survey point on the map.</span>');
+        return true;
+    }
 
-    // Image pixel coords of the two clicked points
-    const ix1 = alignState.img1.ix, iy1 = alignState.img1.iy;
-    const ix2 = alignState.img2.ix, iy2 = alignState.img2.iy;
+    if (alignState.step === 'pt1') {
+        const pt = findNearest(cx, cy);
+        if (!pt) return true; // consumed but no hit — let them try again
+        alignState.pt1 = pt;
+        alignState.done = 2;
+        alignState.step = 'img2';
+        alignStepUI();
+        showStatus(`Alignment: pt1 = <span>${pt.name}</span> — now click a second image spot.`);
+        return true;
+    }
 
-    // World distance and image distance between the two known points
+    if (alignState.step === 'img2') {
+        const { ix, iy } = canvasToImgPixel(cx, cy);
+        alignState.img2 = { ix, iy };
+        alignState.done = 3;
+        alignState.step = 'pt2';
+        alignStepUI();
+        showStatus('Alignment: <span>click the second matching survey point.</span>');
+        return true;
+    }
+
+    if (alignState.step === 'pt2') {
+        const pt = findNearest(cx, cy);
+        if (!pt || pt.name === alignState.pt1.name) return true;
+        alignState.pt2 = pt;
+        alignState.done = 4;
+        alignState.step = 'done';
+        alignStepUI();
+        showStatus(`Alignment: pt2 = <span>${pt.name}</span> — click Align Image to apply.`);
+        return true;
+    }
+
+    return false;
+}
+
+function applyAlignment() {
+    const { img1, img2, pt1, pt2 } = alignState;
+    const wp1 = pt1, wp2 = pt2;
+    const ix1 = img1.ix, iy1 = img1.iy;
+    const ix2 = img2.ix, iy2 = img2.iy;
+
     const worldDist = Math.hypot(wp2.e - wp1.e, wp2.n - wp1.n);
     const imgDist   = Math.hypot(ix2 - ix1, iy2 - iy1);
     if (imgDist < 1 || worldDist < 0.0001) return;
 
-    // Scale: world units per image pixel
     const imgScale = worldDist / imgDist;
 
-    // Rotation: angle from image pixel vector to world (E, N) vector
-    // Image vector (ix2-ix1, iy2-iy1) maps to world vector (wp2.e-wp1.e, wp2.n-wp1.n)
-    // Image +y is canvas-down; world +n is up — so flip iy for world-space angle
-    const imgAngle   = Math.atan2(iy2 - iy1, ix2 - ix1);   // angle of vector in image space (y-down)
-    const worldAngle = Math.atan2(wp2.n - wp1.n, wp2.e - wp1.e); // angle in world space (N up, E right)
-    // Canvas draws with y-down, so world angle in canvas terms is negated N
+    const imgAngle        = Math.atan2(iy2 - iy1, ix2 - ix1);
     const worldAngleCanvas = Math.atan2(-(wp2.n - wp1.n), wp2.e - wp1.e);
-    const rotation = worldAngleCanvas - imgAngle; // radians to rotate image CCW to align with world
+    const rotation = worldAngleCanvas - imgAngle;
 
-    // Image origin (pixel 0,0) in world coords, accounting for rotation
-    // Rotate img1 pixel by -rotation to get its offset from origin in image space, then scale
     const cosR = Math.cos(rotation), sinR = Math.sin(rotation);
-    // The canvas position of img pixel (ix, iy) after rotation around origin is:
-    //   cx = originCanvasX + (ix*cosR - iy*sinR)*canvasPerImg
-    //   cy = originCanvasY + (ix*sinR + iy*cosR)*canvasPerImg
-    // We want toCanvas(wp1.e, wp1.n) to equal that for (ix1, iy1)
-    // So originCanvasX = wp1.cx - (ix1*cosR - iy1*sinR)*canvasPerImg  (at scale=1 canvasPerImg=imgScale)
-    // In world units (divide by scale later in redraw), store as world coord of rotated-image top-left:
-    const wp1c = { cx: wp1.e, cy: -wp1.n }; // world in canvas-axis units (y flipped), scale=1
-    const originCX = wp1c.cx - (ix1 * cosR - iy1 * sinR) * imgScale;
-    const originCY = wp1c.cy - (ix1 * sinR + iy1 * cosR) * imgScale;
-    // Convert back to world coords
+    const originCX = wp1.e - (ix1 * cosR - iy1 * sinR) * imgScale;
+    const originCY = -wp1.n - (ix1 * sinR + iy1 * cosR) * imgScale;
     const originE = originCX;
     const originN = -originCY;
 
@@ -1092,6 +1168,10 @@ document.getElementById('alignOK').addEventListener('click', () => {
     alignState = null;
     redraw();
     showStatus('Image aligned. <span>Click Next Setup to begin traverse.</span>');
+}
+
+document.getElementById('alignOK').addEventListener('click', () => {
+    if (alignState && alignState.step === 'done') applyAlignment();
 });
 
 document.getElementById('alignSkip').addEventListener('click', () => {
@@ -1099,49 +1179,6 @@ document.getElementById('alignSkip').addEventListener('click', () => {
     alignState = null;
     showStatus(points.length > 0 ? 'Points loaded. <span>Click Next Setup to begin.</span>' : 'Load points to begin.');
 });
-
-// Canvas click intercept for alignment picking
-function handleAlignClick(cx, cy) {
-    if (!alignState) return false;
-    // If already aligned, convert through world transform; otherwise use preview (full-canvas) mapping
-    let ix, iy;
-    if (bgTransform.imgScale) {
-        const world = toWorld(cx, cy);
-        // Undo the rotation to get back to image pixel coords
-        const rot = bgTransform.rotation || 0;
-        const cosR = Math.cos(-rot), sinR = Math.sin(-rot);
-        const dx = world.e - bgTransform.originE;
-        const dy = -(world.n - bgTransform.originN); // flip to canvas-y-down
-        // but originN is stored as world N, redraw does translate to canvas origin then rotate
-        // so we need canvas-space offset from origin, unrotated
-        const dxC = (world.e - bgTransform.originE) * (1/bgTransform.imgScale);
-        const dyC = (bgTransform.originN - world.n) * (1/bgTransform.imgScale); // world n to canvas y
-        ix = dxC * Math.cos(-rot) - dyC * Math.sin(-rot);
-        iy = dxC * Math.sin(-rot) + dyC * Math.cos(-rot);
-    } else {
-        // Preview mode: image stretched to fill canvas
-        ix = cx / canvas.width  * bgImage.width;
-        iy = cy / canvas.height * bgImage.height;
-    }
-
-    if (alignState.step === 1) {
-        alignState.img1 = { ix, iy };
-        alignState.step = 2;
-        const el = document.getElementById('alignImg1');
-        el.textContent = `px(${Math.round(ix)}, ${Math.round(iy)}) ✓`;
-        el.classList.add('set');
-        showStatus('Alignment: <span>click point 2 on the map image.</span>');
-    } else if (alignState.step === 2) {
-        alignState.img2 = { ix, iy };
-        alignState.step = 0;
-        const el = document.getElementById('alignImg2');
-        el.textContent = `px(${Math.round(ix)}, ${Math.round(iy)}) ✓`;
-        el.classList.add('set');
-        showStatus('Alignment: <span>select matching known points, then Apply.</span>');
-    }
-    checkAlignReady();
-    return true;
-}
 
 // ── Background Image ──
 const bgFileInput = document.getElementById('bgFileInput');
