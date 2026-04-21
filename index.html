@@ -211,7 +211,6 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
         <div class="panel-section" style="border-top: 1px solid var(--border); border-bottom: none;">
             <h3>Background Image</h3>
             <button class="btn btn-orange" id="btnRealign" style="margin-top:5px; display:none;">&#8982; Re-align Image</button>
-            <button class="btn btn-muted" id="btnRotateBg" style="margin-top:5px; display:none;">&#8635; Rotate 90°</button>
             <button class="btn btn-red" id="btnClearBg" style="margin-top:5px; display:none;">&#10005; Clear Image</button>
             <div id="bgStatus" style="font-size:10px; color:var(--muted); margin-top:5px; display:none;"></div>
         </div>
@@ -398,10 +397,13 @@ function redraw() {
         ctx.globalAlpha = 0.55;
         // Canvas pixel size of one image pixel
         const canvasPerImg = bgTransform.imgScale * scale;
-        // Canvas position of image origin (world coord of top-left pixel)
+        // Canvas position of image pixel (0,0) in canvas coords
         const origin = toCanvas(bgTransform.originE, bgTransform.originN);
-        ctx.drawImage(bgImage, origin.cx, origin.cy,
-            bgImage.width * canvasPerImg, bgImage.height * canvasPerImg);
+        // Apply rotation around the image origin point
+        const rot = bgTransform.rotation || 0;
+        ctx.translate(origin.cx, origin.cy);
+        ctx.rotate(rot);
+        ctx.drawImage(bgImage, 0, 0, bgImage.width * canvasPerImg, bgImage.height * canvasPerImg);
         ctx.globalAlpha = 1.0;
         ctx.restore();
     } else if (bgImage) {
@@ -1004,7 +1006,7 @@ btnRevise.addEventListener('click', () => {
 const alignPopup = document.getElementById('alignPopup');
 let alignState = null;
 // bgTransform: { tx, ty, s } applied when drawing bgImage
-let bgTransform = { originE: 0, originN: 0, imgScale: 0 };
+let bgTransform = { originE: 0, originN: 0, imgScale: 0, rotation: 0 };
 
 function startAlignment() {
     if (!bgImage || points.length === 0) return;
@@ -1052,23 +1054,40 @@ document.getElementById('alignOK').addEventListener('click', () => {
     const ix1 = alignState.img1.ix, iy1 = alignState.img1.iy;
     const ix2 = alignState.img2.ix, iy2 = alignState.img2.iy;
 
-    // World distance between the two known points
+    // World distance and image distance between the two known points
     const worldDist = Math.hypot(wp2.e - wp1.e, wp2.n - wp1.n);
     const imgDist   = Math.hypot(ix2 - ix1, iy2 - iy1);
     if (imgDist < 1 || worldDist < 0.0001) return;
 
-    // Store alignment in world space:
-    // imgScale = world units per image pixel
-    // imgOrigin = world coords (e, n) corresponding to image pixel (0, 0)
+    // Scale: world units per image pixel
     const imgScale = worldDist / imgDist;
 
-    // From wp1: world = imgOrigin + imgPixel * imgScale (with N axis flipped)
-    // imgOrigin.e = wp1.e - ix1 * imgScale
-    // imgOrigin.n = wp1.n + iy1 * imgScale  (image y increases downward, n increases upward)
-    const originE = wp1.e - ix1 * imgScale;
-    const originN = wp1.n + iy1 * imgScale;
+    // Rotation: angle from image pixel vector to world (E, N) vector
+    // Image vector (ix2-ix1, iy2-iy1) maps to world vector (wp2.e-wp1.e, wp2.n-wp1.n)
+    // Image +y is canvas-down; world +n is up — so flip iy for world-space angle
+    const imgAngle   = Math.atan2(iy2 - iy1, ix2 - ix1);   // angle of vector in image space (y-down)
+    const worldAngle = Math.atan2(wp2.n - wp1.n, wp2.e - wp1.e); // angle in world space (N up, E right)
+    // Canvas draws with y-down, so world angle in canvas terms is negated N
+    const worldAngleCanvas = Math.atan2(-(wp2.n - wp1.n), wp2.e - wp1.e);
+    const rotation = worldAngleCanvas - imgAngle; // radians to rotate image CCW to align with world
 
-    bgTransform = { originE, originN, imgScale };
+    // Image origin (pixel 0,0) in world coords, accounting for rotation
+    // Rotate img1 pixel by -rotation to get its offset from origin in image space, then scale
+    const cosR = Math.cos(rotation), sinR = Math.sin(rotation);
+    // The canvas position of img pixel (ix, iy) after rotation around origin is:
+    //   cx = originCanvasX + (ix*cosR - iy*sinR)*canvasPerImg
+    //   cy = originCanvasY + (ix*sinR + iy*cosR)*canvasPerImg
+    // We want toCanvas(wp1.e, wp1.n) to equal that for (ix1, iy1)
+    // So originCanvasX = wp1.cx - (ix1*cosR - iy1*sinR)*canvasPerImg  (at scale=1 canvasPerImg=imgScale)
+    // In world units (divide by scale later in redraw), store as world coord of rotated-image top-left:
+    const wp1c = { cx: wp1.e, cy: -wp1.n }; // world in canvas-axis units (y flipped), scale=1
+    const originCX = wp1c.cx - (ix1 * cosR - iy1 * sinR) * imgScale;
+    const originCY = wp1c.cy - (ix1 * sinR + iy1 * cosR) * imgScale;
+    // Convert back to world coords
+    const originE = originCX;
+    const originN = -originCY;
+
+    bgTransform = { originE, originN, imgScale, rotation };
     alignPopup.style.display = 'none';
     alignState = null;
     redraw();
@@ -1088,8 +1107,17 @@ function handleAlignClick(cx, cy) {
     let ix, iy;
     if (bgTransform.imgScale) {
         const world = toWorld(cx, cy);
-        ix = (world.e - bgTransform.originE) / bgTransform.imgScale;
-        iy = (bgTransform.originN - world.n) / bgTransform.imgScale;
+        // Undo the rotation to get back to image pixel coords
+        const rot = bgTransform.rotation || 0;
+        const cosR = Math.cos(-rot), sinR = Math.sin(-rot);
+        const dx = world.e - bgTransform.originE;
+        const dy = -(world.n - bgTransform.originN); // flip to canvas-y-down
+        // but originN is stored as world N, redraw does translate to canvas origin then rotate
+        // so we need canvas-space offset from origin, unrotated
+        const dxC = (world.e - bgTransform.originE) * (1/bgTransform.imgScale);
+        const dyC = (bgTransform.originN - world.n) * (1/bgTransform.imgScale); // world n to canvas y
+        ix = dxC * Math.cos(-rot) - dyC * Math.sin(-rot);
+        iy = dxC * Math.sin(-rot) + dyC * Math.cos(-rot);
     } else {
         // Preview mode: image stretched to fill canvas
         ix = cx / canvas.width  * bgImage.width;
@@ -1120,28 +1148,7 @@ const bgFileInput = document.getElementById('bgFileInput');
 const btnLoadBg = document.getElementById('btnLoadBg');
 const btnClearBg = document.getElementById('btnClearBg');
 const btnRealign = document.getElementById('btnRealign');
-const btnRotateBg = document.getElementById('btnRotateBg');
 const bgStatus = document.getElementById('bgStatus');
-
-// Rotate the loaded background image 90° clockwise on demand
-btnRotateBg.addEventListener('click', () => {
-    if (!bgImage) return;
-    const rotated = document.createElement('canvas');
-    rotated.width = bgImage.height;
-    rotated.height = bgImage.width;
-    const rctx = rotated.getContext('2d');
-    rctx.translate(rotated.width / 2, rotated.height / 2);
-    rctx.rotate(Math.PI / 2);
-    rctx.drawImage(bgImage, -bgImage.width / 2, -bgImage.height / 2);
-    const newImg = new Image();
-    newImg.onload = () => {
-        bgImage = newImg;
-        bgTransform = { originE: 0, originN: 0, imgScale: 0 };
-        redraw();
-        if (points.length > 0) startAlignment();
-    };
-    newImg.src = rotated.toDataURL('image/jpeg', 0.92);
-});
 
     // Load PDF.js worker as a blob to avoid fake worker in file:// context
     fetch('https://cdn.jsdelivr.net/npm/pdfjs-dist@2.13.216/legacy/build/pdf.worker.min.js')
@@ -1174,7 +1181,7 @@ bgFileInput.addEventListener('change', async () => {
                 bgFileName = file.name;
                 URL.revokeObjectURL(url);
                 bgStatus.textContent = `✓ ${file.name}`;
-                btnClearBg.style.display = ''; btnRealign.style.display = ''; btnRotateBg.style.display = '';
+                btnClearBg.style.display = ''; btnRealign.style.display = ''
                 redraw();
                 if (points.length > 0) startAlignment();
             };
@@ -1194,42 +1201,22 @@ bgFileInput.addEventListener('change', async () => {
                 return;
             }
             const page = await pdf.getPage(1);
-            // Render at 0° first (raw pixel content, no viewport rotation)
-            const viewportRaw = page.getViewport({ scale: 2.0, rotation: 0 });
+            // Render raw — alignment will determine and correct any rotation
+            const viewport = page.getViewport({ scale: 2.0 });
             const offscreen = document.createElement('canvas');
-            offscreen.width = viewportRaw.width;
-            offscreen.height = viewportRaw.height;
-            await page.render({ canvasContext: offscreen.getContext('2d'), viewport: viewportRaw }).promise;
-
-            // Now apply any embedded rotation manually so the final image is upright
-            const pdfRotation = page.rotate || 0; // 0, 90, 180, 270
-            let finalCanvas;
-            if (pdfRotation === 0) {
-                finalCanvas = offscreen;
-            } else {
-                const rad = (pdfRotation * Math.PI) / 180;
-                const sin = Math.abs(Math.sin(rad));
-                const cos = Math.abs(Math.cos(rad));
-                const rotated = document.createElement('canvas');
-                rotated.width  = Math.round(offscreen.width  * cos + offscreen.height * sin);
-                rotated.height = Math.round(offscreen.width  * sin + offscreen.height * cos);
-                const rctx = rotated.getContext('2d');
-                rctx.translate(rotated.width / 2, rotated.height / 2);
-                rctx.rotate(rad);
-                rctx.drawImage(offscreen, -offscreen.width / 2, -offscreen.height / 2);
-                finalCanvas = rotated;
-            }
-
+            offscreen.width = viewport.width;
+            offscreen.height = viewport.height;
+            await page.render({ canvasContext: offscreen.getContext('2d'), viewport }).promise;
             const img = new Image();
             img.onload = () => {
                 bgImage = img;
                 bgFileName = file.name;
                 bgStatus.textContent = `✓ ${file.name} (converted)`;
-                btnClearBg.style.display = ''; btnRealign.style.display = ''; btnRotateBg.style.display = '';
+                btnClearBg.style.display = ''; btnRealign.style.display = '';
                 redraw();
                 if (points.length > 0) startAlignment();
             };
-            img.src = finalCanvas.toDataURL('image/jpeg', 0.92);
+            img.src = offscreen.toDataURL('image/jpeg', 0.92);
 
         } else if (ext === 'tif' || ext === 'tiff') {
             bgStatus.textContent = 'Converting TIFF…';
@@ -1250,7 +1237,7 @@ bgFileInput.addEventListener('change', async () => {
                 bgImage = img;
                 bgFileName = file.name;
                 bgStatus.textContent = `✓ ${file.name} (converted)`;
-                btnClearBg.style.display = ''; btnRealign.style.display = ''; btnRotateBg.style.display = '';
+                btnClearBg.style.display = ''; btnRealign.style.display = ''
                 redraw();
                 if (points.length > 0) startAlignment();
             };
@@ -1275,13 +1262,12 @@ btnRealign.addEventListener('click', () => startAlignment());
 btnClearBg.addEventListener('click', () => {
     bgImage = null;
     bgFileName = '';
-    bgTransform = { originE: 0, originN: 0, imgScale: 0 };
+    bgTransform = { originE: 0, originN: 0, imgScale: 0, rotation: 0 };
     alignPopup.style.display = 'none';
     alignState = null;
     bgStatus.style.display = 'none';
     btnClearBg.style.display = 'none';
     btnRealign.style.display = 'none';
-    btnRotateBg.style.display = 'none';
     redraw();
 });
 
@@ -1377,8 +1363,8 @@ btnClear.addEventListener('click', () => {
     editMode = false; editSnapshot = null; selectedEdit = null; revisingEdit = false;
     btnEdit.classList.remove('active'); btnEdit.textContent = '✎ Edit'; btnEdit.disabled = true;
     btnDelete.style.display = 'none'; btnRevise.style.display = 'none';
-    bgImage = null; bgFileName = ''; bgTransform = { originE: 0, originN: 0, imgScale: 0 };
-    bgStatus.style.display = 'none'; btnClearBg.style.display = 'none'; btnRealign.style.display = 'none'; btnRotateBg.style.display = 'none';
+    bgImage = null; bgFileName = ''; bgTransform = { originE: 0, originN: 0, imgScale: 0, rotation: 0 };
+    bgStatus.style.display = 'none'; btnClearBg.style.display = 'none'; btnRealign.style.display = 'none'
     alignPopup.style.display = 'none'; alignState = null;
     document.getElementById('coordInput').value = '';
     pointList.innerHTML = '';
