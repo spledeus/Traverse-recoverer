@@ -211,6 +211,7 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
         <div class="panel-section" style="border-top: 1px solid var(--border); border-bottom: none;">
             <h3>Background Image</h3>
             <button class="btn btn-orange" id="btnRealign" style="margin-top:5px; display:none;">&#8982; Re-align Image</button>
+            <button class="btn btn-muted" id="btnRotateBg" style="margin-top:5px; display:none;">&#8635; Rotate 90°</button>
             <button class="btn btn-red" id="btnClearBg" style="margin-top:5px; display:none;">&#10005; Clear Image</button>
             <div id="bgStatus" style="font-size:10px; color:var(--muted); margin-top:5px; display:none;"></div>
         </div>
@@ -1119,7 +1120,28 @@ const bgFileInput = document.getElementById('bgFileInput');
 const btnLoadBg = document.getElementById('btnLoadBg');
 const btnClearBg = document.getElementById('btnClearBg');
 const btnRealign = document.getElementById('btnRealign');
+const btnRotateBg = document.getElementById('btnRotateBg');
 const bgStatus = document.getElementById('bgStatus');
+
+// Rotate the loaded background image 90° clockwise on demand
+btnRotateBg.addEventListener('click', () => {
+    if (!bgImage) return;
+    const rotated = document.createElement('canvas');
+    rotated.width = bgImage.height;
+    rotated.height = bgImage.width;
+    const rctx = rotated.getContext('2d');
+    rctx.translate(rotated.width / 2, rotated.height / 2);
+    rctx.rotate(Math.PI / 2);
+    rctx.drawImage(bgImage, -bgImage.width / 2, -bgImage.height / 2);
+    const newImg = new Image();
+    newImg.onload = () => {
+        bgImage = newImg;
+        bgTransform = { originE: 0, originN: 0, imgScale: 0 };
+        redraw();
+        if (points.length > 0) startAlignment();
+    };
+    newImg.src = rotated.toDataURL('image/jpeg', 0.92);
+});
 
     // Load PDF.js worker as a blob to avoid fake worker in file:// context
     fetch('https://cdn.jsdelivr.net/npm/pdfjs-dist@2.13.216/legacy/build/pdf.worker.min.js')
@@ -1152,7 +1174,7 @@ bgFileInput.addEventListener('change', async () => {
                 bgFileName = file.name;
                 URL.revokeObjectURL(url);
                 bgStatus.textContent = `✓ ${file.name}`;
-                btnClearBg.style.display = ''; btnRealign.style.display = '';
+                btnClearBg.style.display = ''; btnRealign.style.display = ''; btnRotateBg.style.display = '';
                 redraw();
                 if (points.length > 0) startAlignment();
             };
@@ -1172,22 +1194,42 @@ bgFileInput.addEventListener('change', async () => {
                 return;
             }
             const page = await pdf.getPage(1);
-            const rotation = page.rotate || 0; // honour embedded rotation metadata
-            const viewport = page.getViewport({ scale: 2.0, rotation }); // 2x for quality
+            // Render at 0° first (raw pixel content, no viewport rotation)
+            const viewportRaw = page.getViewport({ scale: 2.0, rotation: 0 });
             const offscreen = document.createElement('canvas');
-            offscreen.width = viewport.width;
-            offscreen.height = viewport.height;
-            await page.render({ canvasContext: offscreen.getContext('2d'), viewport }).promise;
+            offscreen.width = viewportRaw.width;
+            offscreen.height = viewportRaw.height;
+            await page.render({ canvasContext: offscreen.getContext('2d'), viewport: viewportRaw }).promise;
+
+            // Now apply any embedded rotation manually so the final image is upright
+            const pdfRotation = page.rotate || 0; // 0, 90, 180, 270
+            let finalCanvas;
+            if (pdfRotation === 0) {
+                finalCanvas = offscreen;
+            } else {
+                const rad = (pdfRotation * Math.PI) / 180;
+                const sin = Math.abs(Math.sin(rad));
+                const cos = Math.abs(Math.cos(rad));
+                const rotated = document.createElement('canvas');
+                rotated.width  = Math.round(offscreen.width  * cos + offscreen.height * sin);
+                rotated.height = Math.round(offscreen.width  * sin + offscreen.height * cos);
+                const rctx = rotated.getContext('2d');
+                rctx.translate(rotated.width / 2, rotated.height / 2);
+                rctx.rotate(rad);
+                rctx.drawImage(offscreen, -offscreen.width / 2, -offscreen.height / 2);
+                finalCanvas = rotated;
+            }
+
             const img = new Image();
             img.onload = () => {
                 bgImage = img;
                 bgFileName = file.name;
                 bgStatus.textContent = `✓ ${file.name} (converted)`;
-                btnClearBg.style.display = ''; btnRealign.style.display = '';
+                btnClearBg.style.display = ''; btnRealign.style.display = ''; btnRotateBg.style.display = '';
                 redraw();
                 if (points.length > 0) startAlignment();
             };
-            img.src = offscreen.toDataURL('image/jpeg', 0.92);
+            img.src = finalCanvas.toDataURL('image/jpeg', 0.92);
 
         } else if (ext === 'tif' || ext === 'tiff') {
             bgStatus.textContent = 'Converting TIFF…';
@@ -1208,7 +1250,7 @@ bgFileInput.addEventListener('change', async () => {
                 bgImage = img;
                 bgFileName = file.name;
                 bgStatus.textContent = `✓ ${file.name} (converted)`;
-                btnClearBg.style.display = ''; btnRealign.style.display = '';
+                btnClearBg.style.display = ''; btnRealign.style.display = ''; btnRotateBg.style.display = '';
                 redraw();
                 if (points.length > 0) startAlignment();
             };
@@ -1239,6 +1281,7 @@ btnClearBg.addEventListener('click', () => {
     bgStatus.style.display = 'none';
     btnClearBg.style.display = 'none';
     btnRealign.style.display = 'none';
+    btnRotateBg.style.display = 'none';
     redraw();
 });
 
@@ -1335,7 +1378,7 @@ btnClear.addEventListener('click', () => {
     btnEdit.classList.remove('active'); btnEdit.textContent = '✎ Edit'; btnEdit.disabled = true;
     btnDelete.style.display = 'none'; btnRevise.style.display = 'none';
     bgImage = null; bgFileName = ''; bgTransform = { originE: 0, originN: 0, imgScale: 0 };
-    bgStatus.style.display = 'none'; btnClearBg.style.display = 'none'; btnRealign.style.display = 'none';
+    bgStatus.style.display = 'none'; btnClearBg.style.display = 'none'; btnRealign.style.display = 'none'; btnRotateBg.style.display = 'none';
     alignPopup.style.display = 'none'; alignState = null;
     document.getElementById('coordInput').value = '';
     pointList.innerHTML = '';
