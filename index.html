@@ -83,11 +83,19 @@ textarea#coordInput:focus { outline: none; border-color: var(--accent); }
 .btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
 #pointList { flex: 1; overflow-y: auto; padding: 4px 0; }
-.point-item { padding: 5px 12px; font-size: 12px; font-family: var(--font-mono); display: flex; gap: 8px; align-items: center; cursor: pointer; }
+#pointListHeader { display: none; padding: 3px 12px 3px; font-size: 10px; font-family: var(--font-mono); font-weight: 700; letter-spacing: 0.06em; color: var(--muted); border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 2; display: flex; gap: 0; }
+#pointListHeader .ph-p    { min-width: 44px; }
+#pointListHeader .ph-n    { flex: 1; }
+#pointListHeader .ph-e    { flex: 1; }
+#pointListHeader .ph-z    { flex: 1; }
+#pointListHeader .ph-d    { flex: 1; color: var(--green); }
+.point-item { padding: 4px 12px; font-size: 11px; font-family: var(--font-mono); display: flex; gap: 0; align-items: center; cursor: pointer; }
 .point-item:hover { background: var(--surface2); }
-.point-item .pt-name { color: var(--accent); min-width: 40px; font-weight: 600; }
-.point-item .pt-coords { color: var(--muted); font-size: 11px; }
-.point-item .pt-desc { color: var(--green); font-size: 10px; font-style: italic; margin-left: auto; max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.point-item .pt-name   { color: var(--accent); min-width: 44px; font-weight: 600; flex-shrink: 0; }
+.point-item .pt-n      { color: var(--muted); flex: 1; }
+.point-item .pt-e      { color: var(--muted); flex: 1; }
+.point-item .pt-z      { color: var(--muted); flex: 1; }
+.point-item .pt-d      { color: var(--green); font-size: 10px; font-style: italic; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .point-item.is-setup .pt-name { color: var(--green); }
 .point-item.is-bs .pt-name { color: var(--orange); }
 
@@ -215,7 +223,7 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
         </div>
         <div class="panel-section">
             <h3>Coordinates</h3>
-            <textarea id="coordInput" placeholder="Name,N,E or Name,N,E,Z,Desc&#10;1,5000,5000&#10;2,5100,5020&#10;3,5080,5150"></textarea>
+            <textarea id="coordInput" placeholder="P,N,E  or  P,N,E,D  or  P,N,E,Z,D&#10;1,5000,5000&#10;2,5100,5020,CB&#10;3,5080,5150,105.234,IP"></textarea>
             <input type="file" id="fileInput" accept=".csv,.txt,.rw5" style="display:none;">
             <input type="file" id="mergeFileInput" accept=".csv,.txt,.rw5" style="display:none;">
             <input type="file" id="bgFileInput" accept=".jpg,.jpeg,.png,.pdf,.tif,.tiff" style="display:none;">
@@ -226,6 +234,9 @@ canvas#mapCanvas { display: block; width: 100%; height: 100%; cursor: crosshair;
 
         <div class="panel-section">
             <h3>Points (<span id="ptCount">0</span>)</h3>
+            <div id="pointListHeader">
+                <span class="ph-p">P</span><span class="ph-n">N</span><span class="ph-e">E</span><span class="ph-z" id="phZ">Z</span><span class="ph-d">D</span>
+            </div>
             <div id="pointList"></div>
         </div>
 
@@ -377,7 +388,7 @@ function doAddPoint() {
         ]);
         return;
     }
-    points.push({ name, n, e, desc });
+    points.push({ name, n, e, z: null, desc });
     ptCount.textContent = points.length;
     updatePointList();
     redraw();
@@ -419,14 +430,17 @@ mergeFileInput.addEventListener('change', () => {
                 const pnM = line.match(/PN([^,]+)/);
                 const nM  = line.match(/N\s+([\d.+-]+)/);
                 const eM  = line.match(/E\s+([\d.+-]+)/);
+                const elM = line.match(/EL([\d.+-]+)/);
                 const dM  = line.match(/--(.+)$/);
                 if (!pnM || !nM || !eM) return;
                 const name = pnM[1].trim();
                 const n = parseFloat(nM[1]);
                 const e = parseFloat(eM[1]);
+                const zRaw = elM ? parseFloat(elM[1]) : NaN;
+                const z = (!isNaN(zRaw) && zRaw !== 0) ? zRaw : null;
                 const desc = dM ? dM[1].trim() : '';
                 if (!name || isNaN(n) || isNaN(e)) return;
-                parsed.push({ name, n, e, desc });
+                parsed.push({ name, n, e, z, desc });
             });
         } else {
             // CSV / TXT — same logic as Load Points
@@ -438,9 +452,18 @@ mergeFileInput.addEventListener('change', () => {
                 const name = parts[0].trim();
                 const n = parseFloat(parts[1]);
                 const e = parseFloat(parts[2]);
-                const desc = parts[4] ? parts[4].trim() : '';
                 if (!name || isNaN(n) || isNaN(e)) return;
-                parsed.push({ name, n, e, desc });
+                let z = null, desc = '';
+                if (parts.length >= 5) {
+                    const maybeZ = parseFloat(parts[3]);
+                    z = isNaN(maybeZ) ? null : maybeZ;
+                    desc = parts[4] ? parts[4].trim() : '';
+                } else if (parts.length === 4) {
+                    const maybeZ = parseFloat(parts[3]);
+                    if (!isNaN(maybeZ)) { z = maybeZ; }
+                    else { desc = parts[3].trim(); }
+                }
+                parsed.push({ name, n, e, z, desc });
             });
         }
         if (parsed.length === 0) { showStatus('No valid points found in file.'); mergeFileInput.value = ''; return; }
@@ -493,9 +516,21 @@ btnLoad.addEventListener('click', () => {
         const name = parts[0].trim();
         const n = parseFloat(parts[1]);
         const e = parseFloat(parts[2]);
-        const desc = parts[4] ? parts[4].trim() : '';
         if (!name || isNaN(n) || isNaN(e)) return;
-        parsed.push({ name, n, e, desc });
+        // Detect format: P,N,E  |  P,N,E,D  |  P,N,E,Z,D
+        let z = null, desc = '';
+        if (parts.length >= 5) {
+            // 5+ cols: P,N,E,Z,D
+            const maybeZ = parseFloat(parts[3]);
+            z = isNaN(maybeZ) ? null : maybeZ;
+            desc = parts[4] ? parts[4].trim() : '';
+        } else if (parts.length === 4) {
+            // 4 cols: could be P,N,E,D (desc) — treat col3 as desc if not a number
+            const maybeZ = parseFloat(parts[3]);
+            if (!isNaN(maybeZ)) { z = maybeZ; }
+            else { desc = parts[3].trim(); }
+        }
+        parsed.push({ name, n, e, z, desc });
     });
     if (parsed.length === 0) { showStatus('No valid points found.', 'red'); return; }
     points = parsed;
@@ -938,12 +973,29 @@ canvas.addEventListener('wheel', e => {
 // ── Update helpers ──
 function updatePointList() {
     pointList.innerHTML = '';
+    const header = document.getElementById('pointListHeader');
+    const phZ = document.getElementById('phZ');
+
+    // Determine if any point has Z
+    const hasZ = points.some(p => p.z !== null && p.z !== undefined);
+    // Show/hide header and Z column
+    if (points.length > 0) {
+        header.style.display = 'flex';
+        phZ.style.display = hasZ ? '' : 'none';
+    } else {
+        header.style.display = 'none';
+    }
+
     points.forEach(p => {
         const div = document.createElement('div');
         div.className = 'point-item';
         if (currentSetup && p.name === currentSetup.name) div.classList.add('is-setup');
         else if (currentBS && p.name === currentBS.name) div.classList.add('is-bs');
-        div.innerHTML = `<span class="pt-name">${p.name}</span><span class="pt-coords">N:${p.n.toFixed(3)} E:${p.e.toFixed(3)}</span>${p.desc ? `<span class="pt-desc"> ${p.desc}</span>` : ''}`;
+        const zCol = hasZ
+            ? `<span class="pt-z">${p.z !== null && p.z !== undefined ? p.z.toFixed(3) : '—'}</span>`
+            : '';
+        const dCol = p.desc ? `<span class="pt-d">${p.desc}</span>` : `<span class="pt-d"></span>`;
+        div.innerHTML = `<span class="pt-name">${p.name}</span><span class="pt-n">${p.n.toFixed(3)}</span><span class="pt-e">${p.e.toFixed(3)}</span>${zCol}${dCol}`;
         div.addEventListener('click', () => { if (editMode) openDescPopup(p); });
         pointList.appendChild(div);
     });
